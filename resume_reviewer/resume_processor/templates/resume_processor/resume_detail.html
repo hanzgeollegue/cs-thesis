@@ -1,0 +1,205 @@
+{% extends 'resume_processor/base.html' %}
+
+{% block title %}{{ resume.filename }} - Suitabilizer Details{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>
+        <i class="fas fa-file-pdf me-2 text-danger"></i>{{ resume.filename }}
+    </h2>
+    <div>
+        <a href="{% url 'resume_processor:resume_list' %}" class="btn btn-outline-secondary">
+            <i class="fas fa-arrow-left me-2"></i>Back to List
+        </a>
+        <a href="{% url 'resume_processor:resume_json' resume.id %}" class="btn btn-outline-info ms-2">
+            <i class="fas fa-code me-1"></i>View JSON Data
+        </a>
+        <a href="{% url 'resume_processor:download_json' resume.id %}" class="btn btn-outline-success ms-2">
+            <i class="fas fa-download me-1"></i>Download JSON
+        </a>
+        {% if resume.processing_status == 'failed' %}
+        <button class="btn btn-warning ms-2" onclick="reprocessResume({{ resume.id }})">
+            <i class="fas fa-redo me-2"></i>Retry Processing
+        </button>
+        {% endif %}
+    </div>
+</div>
+
+<div class="row">
+    <!-- Resume Information -->
+    <div class="col-md-4">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-info-circle me-2"></i>Resume Information
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <strong>Status:</strong>
+                    <span class="badge ms-2 
+                        {% if resume.processing_status == 'completed' %}bg-success
+                        {% elif resume.processing_status == 'processing' %}bg-warning
+                        {% elif resume.processing_status == 'failed' %}bg-danger
+                        {% else %}bg-secondary{% endif %}">
+                        {{ resume.processing_status|title }}
+                    </span>
+                </div>
+                
+                <div class="mb-3">
+                    <strong>File Size:</strong>
+                    <span class="text-muted ms-2">{{ resume.file_size|filesizeformat }}</span>
+                </div>
+                
+                <div class="mb-3">
+                    <strong>Uploaded:</strong>
+                    <span class="text-muted ms-2">{{ resume.uploaded_at|date:"M d, Y H:i" }}</span>
+                </div>
+                
+                {% if resume.processed_at %}
+                <div class="mb-3">
+                    <strong>Processed:</strong>
+                    <span class="text-muted ms-2">{{ resume.processed_at|date:"M d, Y H:i" }}</span>
+                </div>
+                {% endif %}
+                
+                {% if resume.text_file_path %}
+                <div class="mb-3">
+                    <strong>Text File:</strong>
+                    <div class="text-muted ms-2 small">{{ resume.text_file_path }}</div>
+                </div>
+                {% endif %}
+                
+                {% if resume.error_message %}
+                <div class="alert alert-danger">
+                    <strong>Error:</strong>
+                    <div class="mt-2">{{ resume.error_message }}</div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        
+        <!-- Actions -->
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-tools me-2"></i>Actions
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="d-grid gap-2">
+                    <a href="{{ resume.original_file.url }}" class="btn btn-outline-primary" target="_blank">
+                        <i class="fas fa-download me-2"></i>Download Original PDF
+                    </a>
+                    
+                    {% if resume.text_file_path %}
+                    <a href="{{ resume.text_file_path }}" class="btn btn-outline-success" target="_blank">
+                        <i class="fas fa-file-alt me-2"></i>Download Extracted Text
+                    </a>
+                    {% endif %}
+                    
+                    {% if resume.processing_status == 'failed' %}
+                    <button class="btn btn-warning" onclick="reprocessResume({{ resume.id }})">
+                        <i class="fas fa-redo me-2"></i>Retry Processing
+                    </button>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Extracted Text -->
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="fas fa-file-alt me-2"></i>Extracted Text
+                </h5>
+                {% if resume.extracted_text %}
+                <span class="badge bg-info">{{ resume.extracted_text|length }} characters</span>
+                {% endif %}
+            </div>
+            <div class="card-body">
+                {% if resume.processing_status == 'completed' and resume.extracted_text %}
+                    <div class="extracted-text-container">
+                        <pre class="text-content">{{ resume.extracted_text }}</pre>
+                    </div>
+                {% elif resume.processing_status == 'processing' %}
+                    <div class="text-center py-4">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Processing...</span>
+                        </div>
+                        <p class="mt-3 text-muted">Processing resume...</p>
+                    </div>
+                {% elif resume.processing_status == 'failed' %}
+                    <div class="text-center py-4">
+                        <i class="fas fa-exclamation-triangle fa-3x text-warning mb-3"></i>
+                        <h5 class="text-muted">Processing Failed</h5>
+                        <p class="text-muted">The resume could not be processed. Please try again.</p>
+                    </div>
+                {% else %}
+                    <div class="text-center py-4">
+                        <i class="fas fa-clock fa-3x text-muted mb-3"></i>
+                        <h5 class="text-muted">Pending Processing</h5>
+                        <p class="text-muted">This resume is waiting to be processed.</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<style>
+.extracted-text-container {
+    max-height: 600px;
+    overflow-y: auto;
+    border: 1px solid #dee2e6;
+    border-radius: 0.375rem;
+    padding: 1rem;
+    background-color: #f8f9fa;
+}
+
+.text-content {
+    font-family: 'Courier New', monospace;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    margin: 0;
+}
+</style>
+
+<script>
+function reprocessResume(resumeId) {
+    if (confirm('Are you sure you want to retry processing this resume?')) {
+        fetch(`/resume/api/process/${resumeId}/`, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value,
+            },
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                location.reload();
+            } else {
+                alert('Failed to reprocess resume: ' + (data.error_message || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('An error occurred while reprocessing the resume.');
+        });
+    }
+}
+
+// Auto-refresh if processing
+{% if resume.processing_status == 'processing' %}
+setTimeout(function() {
+    location.reload();
+}, 5000);
+{% endif %}
+</script>
+{% endblock %} 

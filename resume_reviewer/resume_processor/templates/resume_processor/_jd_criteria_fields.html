@@ -1,0 +1,70 @@
+<div class="form-group">
+  <label for="position_title">Job Position/Title</label>
+  <input type="text" id="position_title" name="position_title" class="form-control" placeholder="e.g., Backend Engineer" value="{{ last_jd_criteria.position_title|default_if_none:'' }}">
+</div>
+
+<div class="form-group">
+  <label for="experience_min_years">Experience Level (min years)</label>
+  <input type="number" id="experience_min_years" name="experience_min_years" min="0" step="1" class="form-control" placeholder="e.g., 3" value="{{ last_jd_criteria.experience_min_years|default_if_none:'' }}">
+</div>
+
+<div class="form-group">
+  <label for="education_requirements">Education Requirements</label>
+  <input type="text" id="education_requirements" name="education_requirements" class="form-control" placeholder="e.g., BS in CS or related" value="{{ last_jd_criteria.education_requirements|default_if_none:'' }}">
+</div>
+
+<div class="form-group">
+  <label for="must_have_skills">Skills & Technologies — Must Have (comma-separated)</label>
+  <input type="text" id="must_have_skills" name="must_have_skills" class="form-control" placeholder="e.g., python, aws, sql" value="{% if last_jd_criteria.must_have_skills %}{{ last_jd_criteria.must_have_skills|join:', ' }}{% endif %}">
+</div>
+
+<div class="form-group">
+  <label for="nice_to_have_skills">Skills & Technologies — Nice To Have (comma-separated)</label>
+  <input type="text" id="nice_to_have_skills" name="nice_to_have_skills" class="form-control" placeholder="e.g., docker, kubernetes, react" value="{% if last_jd_criteria.nice_to_have_skills %}{{ last_jd_criteria.nice_to_have_skills|join:', ' }}{% endif %}">
+</div>
+
+<div class="form-group">
+  <label for="industry_experience">Industry Experience (comma-separated)</label>
+  <input type="text" id="industry_experience" name="industry_experience" class="form-control" placeholder="e.g., fintech, healthcare" value="{% if last_jd_criteria.industry_experience %}{{ last_jd_criteria.industry_experience|join:', ' }}{% endif %}">
+</div>
+
+<div class="form-group">
+  <label for="responsibilities">Responsibilities (multiline)</label>
+  <textarea id="responsibilities" name="responsibilities" class="form-control" rows="3" placeholder="List key responsibilities...">{% if last_jd_criteria.responsibilities %}{{ last_jd_criteria.responsibilities|join:'\n' }}{% endif %}</textarea>
+</div>
+
+<div class="form-group">
+  <label for="keywords">Keywords/Phrases (comma-separated)</label>
+  <input type="text" id="keywords" name="keywords" class="form-control" placeholder="e.g., microservices, distributed systems" value="{% if last_jd_criteria.keywords %}{{ last_jd_criteria.keywords|join:', ' }}{% endif %}">
+</div>
+
+<div class="form-group">
+  <label for="location">Location / Remote</label>
+  <input type="text" id="location" name="location" class="form-control" placeholder="e.g., New York, Remote OK" value="{{ last_jd_criteria.location|default_if_none:'' }}">
+</div>
+
+<div class="form-group">
+  <label for="seniority_level">Seniority Level</label>
+  <select id="seniority_level" name="seniority_level" class="form-control">
+    <option value="">-- Select --</option>
+    <option value="intern" {% if last_jd_criteria.seniority_level == 'intern' %}selected{% endif %}>Intern</option>
+    <option value="junior" {% if last_jd_criteria.seniority_level == 'junior' %}selected{% endif %}>Junior</option>
+    <option value="mid" {% if last_jd_criteria.seniority_level == 'mid' %}selected{% endif %}>Mid</option>
+    <option value="senior" {% if last_jd_criteria.seniority_level == 'senior' %}selected{% endif %}>Senior</option>
+    <option value="lead" {% if last_jd_criteria.seniority_level == 'lead' %}selected{% endif %}>Lead</option>
+    <option value="staff" {% if last_jd_criteria.seniority_level == 'staff' %}selected{% endif %}>Staff</option>
+  </select>
+  
+</div>
+
+<div class="form-group">
+  <label for="certifications">Certifications/Licenses (comma-separated)</label>
+  <input type="text" id="certifications" name="certifications" class="form-control" placeholder="e.g., aws solutions architect, pmp" value="{% if last_jd_criteria.certifications %}{{ last_jd_criteria.certifications|join:', ' }}{% endif %}">
+</div>
+
+<div class="form-group">
+  <label for="languages">Languages (comma-separated)</label>
+  <input type="text" id="languages" name="languages" class="form-control" placeholder="e.g., english, spanish" value="{% if last_jd_criteria.languages %}{{ last_jd_criteria.languages|join:', ' }}{% endif %}">
+</div>
+
+

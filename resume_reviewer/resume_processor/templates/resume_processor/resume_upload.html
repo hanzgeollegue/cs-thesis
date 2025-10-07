@@ -1,0 +1,512 @@
+{% extends 'resume_processor/base.html' %}
+
+{% block title %}Upload Resumes{% endblock %}
+
+{% block content %}
+<div class="upload-section">
+    <div class="breadcrumb">
+        <a href="{% url 'home' %}">Home</a> → 
+        <a href="{% url 'jd_new' %}">Job Description</a> → 
+        <span>Upload Resumes</span>
+    </div>
+    
+    <div class="stepper">
+        <div class="step completed">1. Job Description</div>
+        <div class="step active">2. Upload Resumes</div>
+        <div class="step">3. Processing</div>
+        <div class="step">4. Results</div>
+    </div>
+    
+    <h2>Upload Candidate Resumes</h2>
+    <p>Upload PDF resumes for the candidates you want to evaluate.</p>
+    
+    {% if jd_criteria %}
+    <div class="jd-summary">
+        <h3>Job Requirements Summary</h3>
+        <div class="summary-content">
+            <p><strong>Position:</strong> {{ jd_criteria.position_title|default:"Not specified" }}</p>
+            <p><strong>Level:</strong> {{ jd_criteria.seniority_level|default:"Not specified" }}</p>
+            <p><strong>Experience:</strong> {{ jd_criteria.experience_min_years|default:"Not specified" }} years</p>
+            <p><strong>Must-have skills:</strong> {{ jd_criteria.must_have_skills|join:", "|default:"Not specified" }}</p>
+        </div>
+        <a href="{% url 'jd_new' %}" class="btn btn-secondary btn-sm">Edit Requirements</a>
+    </div>
+    {% endif %}
+    
+    <form id="uploadForm" class="upload-form" enctype="multipart/form-data">
+        {% csrf_token %}
+        
+        <div class="file-upload-area">
+            <div class="file-upload-box" id="fileUploadBox">
+                <div class="upload-icon">📄</div>
+                <h3>Drop PDF files here or click to browse</h3>
+                <p>Select up to 25 resume PDFs</p>
+                <input type="file" id="resumes" name="resumes" multiple accept=".pdf" required>
+            </div>
+            
+            <div class="file-list" id="fileList"></div>
+        </div>
+        
+        <div class="upload-options">
+            <label class="checkbox-label">
+                <input type="checkbox" id="disableOcr" name="disable_ocr">
+                <span class="checkmark"></span>
+                Disable OCR (faster processing, text-only PDFs)
+            </label>
+            <small>Uncheck if you have image-based PDFs that need OCR</small>
+        </div>
+        
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary" id="submitBtn">Process Resumes</button>
+            <a href="{% url 'jd_new' %}" class="btn btn-secondary">Back to Job Description</a>
+        </div>
+    </form>
+    
+    <div class="loading" id="loading" style="display: none;">
+        <div class="spinner"></div>
+        <h3>Processing Resumes...</h3>
+        <p>This may take a few minutes. Please don't close this page.</p>
+    </div>
+    
+    <div class="results" id="results" style="display: none;">
+        <div class="success-message">
+            <h3>✅ Processing Complete!</h3>
+            <p>Your resumes have been analyzed. You can now view the results.</p>
+            <a href="{% url 'ranking_list' %}" class="btn btn-primary">View Results</a>
+        </div>
+    </div>
+    
+    <div class="error" id="error" style="display: none;">
+        <div class="error-message">
+            <h3>❌ Processing Error</h3>
+            <p id="errorText"></p>
+            <button onclick="retryUpload()" class="btn btn-primary">Try Again</button>
+        </div>
+    </div>
+</div>
+
+<style>
+.upload-section h2 {
+    text-align: center;
+    color: #2c3e50;
+    margin-bottom: 10px;
+    font-size: 2rem;
+}
+
+.upload-section p {
+    text-align: center;
+    color: #7f8c8d;
+    margin-bottom: 30px;
+    font-size: 1.1rem;
+}
+
+.breadcrumb {
+    margin-bottom: 20px;
+    color: #6c757d;
+}
+
+.breadcrumb a {
+    color: #007bff;
+    text-decoration: none;
+}
+
+.breadcrumb a:hover {
+    text-decoration: underline;
+}
+
+.stepper {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 30px;
+    gap: 20px;
+}
+
+.step {
+    padding: 10px 20px;
+    border-radius: 20px;
+    background: #e9ecef;
+    color: #6c757d;
+    font-weight: 500;
+}
+
+.step.active {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+}
+
+.step.completed {
+    background: #28a745;
+    color: white;
+}
+
+.jd-summary {
+    background: #e8f5e8;
+    border: 1px solid #c3e6cb;
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 30px;
+}
+
+.jd-summary h3 {
+    color: #155724;
+    margin-bottom: 15px;
+}
+
+.summary-content p {
+    margin-bottom: 8px;
+    color: #155724;
+}
+
+.btn-sm {
+    padding: 8px 16px;
+    font-size: 0.9rem;
+}
+
+.file-upload-area {
+    margin-bottom: 30px;
+}
+
+.file-upload-box {
+    border: 3px dashed #dee2e6;
+    border-radius: 15px;
+    padding: 40px;
+    text-align: center;
+    background: #f8f9fa;
+    transition: all 0.3s ease;
+    cursor: pointer;
+    position: relative;
+}
+
+.file-upload-box:hover {
+    border-color: #667eea;
+    background: #f0f2ff;
+}
+
+.file-upload-box.dragover {
+    border-color: #667eea;
+    background: #e8f0ff;
+    transform: scale(1.02);
+}
+
+.file-upload-box input[type="file"] {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.upload-icon {
+    font-size: 3rem;
+    margin-bottom: 15px;
+}
+
+.file-upload-box h3 {
+    color: #2c3e50;
+    margin-bottom: 10px;
+}
+
+.file-upload-box p {
+    color: #6c757d;
+    margin: 0;
+}
+
+.file-list {
+    margin-top: 20px;
+}
+
+.file-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 15px;
+    background: white;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    margin-bottom: 10px;
+}
+
+.file-item .file-name {
+    font-weight: 500;
+    color: #2c3e50;
+}
+
+.file-item .file-size {
+    color: #6c757d;
+    font-size: 0.9rem;
+}
+
+.file-item .remove-btn {
+    background: #dc3545;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 8px;
+    cursor: pointer;
+    font-size: 0.8rem;
+}
+
+.upload-options {
+    background: #f8f9fa;
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 30px;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    font-weight: 500;
+    color: #2c3e50;
+}
+
+.checkbox-label input[type="checkbox"] {
+    margin-right: 10px;
+    transform: scale(1.2);
+}
+
+.upload-options small {
+    display: block;
+    margin-top: 8px;
+    color: #6c757d;
+}
+
+.form-actions {
+    text-align: center;
+    display: flex;
+    gap: 15px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.loading, .results, .error {
+    text-align: center;
+    padding: 40px;
+    border-radius: 15px;
+    margin-top: 30px;
+}
+
+.loading {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+}
+
+.results {
+    background: #d4edda;
+    border: 1px solid #c3e6cb;
+}
+
+.error {
+    background: #f8d7da;
+    border: 1px solid #f5c6cb;
+}
+
+.spinner {
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #667eea;
+    border-radius: 50%;
+    width: 50px;
+    height: 50px;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 20px;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+@media (max-width: 768px) {
+    .stepper {
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+    }
+    
+    .file-upload-box {
+        padding: 30px 20px;
+    }
+    
+    .form-actions {
+        flex-direction: column;
+        align-items: center;
+    }
+}
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const fileUploadBox = document.getElementById('fileUploadBox');
+    const fileInput = document.getElementById('resumes');
+    const fileList = document.getElementById('fileList');
+    const uploadForm = document.getElementById('uploadForm');
+    const submitBtn = document.getElementById('submitBtn');
+    const loading = document.getElementById('loading');
+    const results = document.getElementById('results');
+    const error = document.getElementById('error');
+    const errorText = document.getElementById('errorText');
+
+    // Drag and drop functionality
+    fileUploadBox.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        fileUploadBox.classList.add('dragover');
+    });
+
+    fileUploadBox.addEventListener('dragleave', function(e) {
+        e.preventDefault();
+        fileUploadBox.classList.remove('dragover');
+    });
+
+    fileUploadBox.addEventListener('drop', function(e) {
+        e.preventDefault();
+        fileUploadBox.classList.remove('dragover');
+        const files = e.dataTransfer.files;
+        handleFiles(files);
+    });
+
+    fileInput.addEventListener('change', function(e) {
+        handleFiles(e.target.files);
+    });
+
+    function handleFiles(files) {
+        // Clear previous files
+        fileList.innerHTML = '';
+        
+        if (files.length > 25) {
+            alert('Maximum 25 resumes allowed');
+            return;
+        }
+
+        Array.from(files).forEach(file => {
+            if (file.type === 'application/pdf') {
+                addFileToList(file);
+            } else {
+                alert(`${file.name} is not a PDF file`);
+            }
+        });
+    }
+
+    function addFileToList(file) {
+        const fileItem = document.createElement('div');
+        fileItem.className = 'file-item';
+        fileItem.innerHTML = `
+            <div>
+                <div class="file-name">${file.name}</div>
+                <div class="file-size">${(file.size / 1024 / 1024).toFixed(2)} MB</div>
+            </div>
+            <button type="button" class="remove-btn" onclick="removeFile(this)">Remove</button>
+        `;
+        fileList.appendChild(fileItem);
+    }
+
+    window.removeFile = function(btn) {
+        btn.parentElement.remove();
+    };
+
+    uploadForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const files = fileInput.files;
+        if (files.length === 0) {
+            alert('Please select at least one resume file');
+            return;
+        }
+
+        // Show loading
+        loading.style.display = 'block';
+        results.style.display = 'none';
+        error.style.display = 'none';
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Processing...';
+
+        try {
+            const formData = new FormData();
+            
+            // Add files
+            Array.from(files).forEach(file => {
+                formData.append('resumes', file);
+            });
+
+            // Add OCR setting
+            if (document.getElementById('disableOcr').checked) {
+                formData.append('disable_ocr', '1');
+            }
+
+            const response = await fetch('{% url "debug_upload" %}', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const debugResult = await response.json();
+            console.log('Debug result:', debugResult);
+            
+            // Now try the actual upload
+            const actualResponse = await fetch('{% url "resume_upload" %}', {
+                method: 'POST',
+                body: formData
+            });
+
+            const result = await actualResponse.json();
+
+            if (actualResponse.ok && result.task_id) {
+                // Got task ID - start polling for progress
+                const taskId = result.task_id;
+                loading.style.display = 'block';
+                
+                // Poll for progress every 2 seconds
+                const pollProgress = async () => {
+                    try {
+                        const progressResponse = await fetch(`/batch-progress/${taskId}/`);
+                        const progressData = await progressResponse.json();
+                        
+                        // Update loading message
+                        const loadingP = document.querySelector('#loading p');
+                        if (loadingP) {
+                            loadingP.textContent = `${progressData.message || 'Processing...'} (${progressData.processed_resumes || 0}/${progressData.total_resumes || 0})`;
+                        }
+                        
+                        if (progressData.status === 'completed') {
+                            // Processing complete - redirect to results
+                            results.style.display = 'block';
+                            loading.style.display = 'none';
+                            setTimeout(() => {
+                                window.location.href = '{% url "ranking_list" %}';
+                            }, 1000);
+                        } else if (progressData.status === 'failed') {
+                            // Processing failed
+                            throw new Error(progressData.error || 'Processing failed');
+                        } else {
+                            // Still processing - poll again
+                            setTimeout(pollProgress, 2000);
+                        }
+                    } catch (pollError) {
+                        logger.error('Polling error:', pollError);
+                        errorText.textContent = pollError.message || 'Error checking progress';
+                        error.style.display = 'block';
+                        loading.style.display = 'none';
+                    }
+                };
+                
+                // Start polling
+                pollProgress();
+            } else {
+                throw new Error(result.error || 'Failed to start processing');
+            }
+        } catch (err) {
+            errorText.textContent = err.message;
+            error.style.display = 'block';
+            loading.style.display = 'none';
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Process Resumes';
+        }
+    });
+
+    window.retryUpload = function() {
+        error.style.display = 'none';
+    };
+});
+</script>
+{% endblock %}

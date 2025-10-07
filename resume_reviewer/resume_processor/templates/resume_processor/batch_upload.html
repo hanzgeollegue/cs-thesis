@@ -1,0 +1,191 @@
+{% extends 'resume_processor/base.html' %}
+
+{% block title %}Batch Resume Processing{% endblock %}
+{% block header_title %}Batch Resume Processing{% endblock %}
+{% block header_subtitle %}Upload multiple resumes for AI-powered analysis and ranking{% endblock %}
+
+{% block content %}
+<div class="upload-section">
+    <div class="card">
+        <h3>📚 Batch Resume Processing</h3>
+        <p>Upload up to 25 resume PDFs and a job description to get AI-powered analysis, scoring, and ranking of candidates.</p>
+        
+        {% if api_key_configured %}
+            <div style="margin: 20px 0; padding: 15px; background: #d4edda; border-radius: 10px; border-left: 4px solid #28a745;">
+                <h4 style="color: #155724; margin-bottom: 10px;">✅ OpenAI API Configured</h4>
+                <p style="color: #155724; margin-bottom: 5px;"><strong>Model:</strong> {{ openai_model }}</p>
+                <p style="color: #155724; margin-bottom: 0;"><strong>Status:</strong> LLM ranking will be used for intelligent candidate evaluation</p>
+            </div>
+        {% else %}
+            <div style="margin: 20px 0; padding: 15px; background: #fff3cd; border-radius: 10px; border-left: 4px solid #ffc107;">
+                <h4 style="color: #856404; margin-bottom: 10px;">⚠️ OpenAI API Not Configured</h4>
+                <p style="color: #856404; margin-bottom: 5px;">LLM ranking is not available. The system will use fallback scoring methods.</p>
+                <p style="color: #856404; margin-bottom: 0;"><strong>To enable LLM ranking:</strong> Set the OPENAI_API_KEY environment variable or add it to config.py</p>
+            </div>
+        {% endif %}
+        
+        {% if config_issues %}
+            <div style="margin: 20px 0; padding: 15px; background: #ffeaea; border-radius: 10px; border-left: 4px solid #dc3545;">
+                <h4 style="color: #721c24; margin-bottom: 10px;">❌ Configuration Issues</h4>
+                <ul style="color: #721c24; margin-bottom: 0;">
+                    {% for issue in config_issues %}
+                        <li>{{ issue }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        {% endif %}
+        
+        <form id="batchForm" class="upload-form" enctype="multipart/form-data">
+            <div class="form-group">
+                <label for="jobDescription">Job Description</label>
+                <textarea id="jobDescription" name="job_description" required placeholder="Enter the job description here...">{{ last_job_description|default_if_none:"" }}</textarea>
+            </div>
+            
+            <div class="form-group">
+                <label for="resumes">Resume Files (PDF, max 25)</label>
+                <div class="file-upload">
+                    <input type="file" id="resumes" name="resumes" multiple accept=".pdf" required>
+                    <label for="resumes" class="file-upload-label">
+                        📁 Choose PDF Files
+                    </label>
+                </div>
+                <div class="file-info">
+                    Select multiple PDF files (maximum 25 resumes allowed)
+                </div>
+            </div>
+            
+            <button type="submit" class="submit-btn" id="submitBtn">
+                {% if api_key_configured %}
+                    🤖 Process with AI Ranking
+                {% else %}
+                    📊 Process with Fallback Scoring
+                {% endif %}
+            </button>
+        </form>
+    </div>
+    
+    <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <p>Processing resumes... This may take a few minutes.</p>
+    </div>
+    
+    <div class="results" id="results" style="display: none;"></div>
+    <div class="error" id="error" style="display: none;"></div>
+    <div class="success" id="success" style="display: none;"></div>
+</div>
+
+<div class="back-link">
+    <a href="/">← Back to Landing Page</a>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const form = document.getElementById('batchForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const loading = document.getElementById('loading');
+        const resultsDiv = document.getElementById('results');
+        const errorDiv = document.getElementById('error');
+        const successDiv = document.getElementById('success');
+        
+        if (!form || !submitBtn || !loading || !resultsDiv || !errorDiv || !successDiv) {
+            console.error('Required DOM elements not found');
+            return;
+        }
+        
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            // Reset display
+            resultsDiv.style.display = 'none';
+            errorDiv.style.display = 'none';
+            successDiv.style.display = 'none';
+            loading.style.display = 'block';
+            
+            // Disable submit button
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Processing...';
+            
+            try {
+                const formData = new FormData();
+                formData.append('job_description', document.getElementById('jobDescription').value);
+                
+                const resumeFiles = document.getElementById('resumes').files;
+                if (resumeFiles.length === 0) {
+                    throw new Error('Please select at least one resume file.');
+                }
+                
+                if (resumeFiles.length > 25) {
+                    throw new Error('Maximum 25 resumes allowed.');
+                }
+                
+                for (let i = 0; i < resumeFiles.length; i++) {
+                    formData.append('resumes', resumeFiles[i]);
+                }
+                
+                const response = await fetch('/resume/batch-upload/', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    // Success
+                    successDiv.textContent = 'Batch processing completed successfully!';
+                    successDiv.style.display = 'block';
+                    
+                    // Show results
+                    resultsDiv.textContent = JSON.stringify(result, null, 2);
+                    resultsDiv.style.display = 'block';
+                    
+                    // Show summary
+                    if (result.batch_summary) {
+                        const summary = `
+Batch Summary:
+- Resumes processed: ${result.resumes ? result.resumes.length : 0}
+- Top candidates: ${result.batch_summary.top_candidates ? result.batch_summary.top_candidates.join(', ') : 'None'}
+- Common gaps: ${result.batch_summary.common_gaps ? result.batch_summary.common_gaps.join(', ') : 'None'}
+- Notes: ${result.batch_summary.notes || 'None'}
+                        `;
+                        console.log(summary);
+                    }
+                } else {
+                    // Error
+                    errorDiv.textContent = `Error: ${result.error || 'Unknown error occurred'}`;
+                    errorDiv.style.display = 'block';
+                }
+                
+            } catch (error) {
+                errorDiv.textContent = `Error: ${error.message}`;
+                errorDiv.style.display = 'block';
+            } finally {
+                // Re-enable submit button and hide loading
+                loading.style.display = 'none';
+                submitBtn.disabled = false;
+                submitBtn.textContent = '{% if api_key_configured %}🤖 Process with AI Ranking{% else %}📊 Process with Fallback Scoring{% endif %}';
+            }
+        });
+
+        // File selection feedback
+        const resumesInput = document.getElementById('resumes');
+        if (resumesInput) {
+            resumesInput.addEventListener('change', function(e) {
+                const files = e.target.files;
+                const fileInfo = document.querySelector('.file-info');
+                
+                if (fileInfo && files) {
+                    if (files.length > 0) {
+                        fileInfo.innerHTML = `Selected ${files.length} file(s): ${Array.from(files).map(f => f.name).join(', ')}`;
+                        fileInfo.style.color = '#28a745';
+                    } else {
+                        fileInfo.innerHTML = 'Select multiple PDF files (maximum 25 resumes allowed)';
+                        fileInfo.style.color = '#6c757d';
+                    }
+                }
+            });
+        }
+    });
+</script>
+{% endblock %} 

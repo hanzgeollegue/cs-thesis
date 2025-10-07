@@ -1,0 +1,132 @@
+{% extends 'resume_processor/base.html' %}
+
+{% block title %}Resume Analysis System{% endblock %}
+
+{% block header_title %}Resume Analysis System{% endblock %}
+{% block header_subtitle %}AI-powered candidate evaluation and ranking{% endblock %}
+
+{% block content %}
+<div class="welcome-section">
+    <div class="welcome-content">
+        <h2>Welcome to Resume Analysis</h2>
+        <p>Our AI-powered system helps you find the best candidates by analyzing resumes against your job requirements.</p>
+        
+        <div class="process-steps">
+            <h3>How it works:</h3>
+            <ol class="steps-list">
+                <li><strong>Job Description:</strong> Define your requirements and must-have skills</li>
+                <li><strong>Upload Resumes:</strong> Add candidate resumes (up to 25 PDFs)</li>
+                <li><strong>AI Analysis:</strong> Our system scores and ranks candidates</li>
+                <li><strong>Review Results:</strong> See detailed rankings with explanations</li>
+            </ol>
+        </div>
+        
+        <div class="start-section">
+            <a href="{% url 'jd_new' %}" class="btn btn-primary btn-large">Start Analysis</a>
+            <p class="start-note">Begin by adding your job description</p>
+        </div>
+    </div>
+</div>
+
+<style>
+.welcome-section {
+    text-align: center;
+    padding: 40px 0;
+}
+
+.welcome-content h2 {
+    font-size: 2.5rem;
+    color: #2c3e50;
+    margin-bottom: 20px;
+    font-weight: 300;
+}
+
+.welcome-content p {
+    font-size: 1.2rem;
+    color: #7f8c8d;
+    margin-bottom: 40px;
+    max-width: 600px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.process-steps {
+    background: #f8f9fa;
+    border-radius: 15px;
+    padding: 30px;
+    margin: 40px 0;
+    text-align: left;
+    max-width: 600px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.process-steps h3 {
+    color: #2c3e50;
+    margin-bottom: 20px;
+    text-align: center;
+    font-size: 1.5rem;
+}
+
+.steps-list {
+    list-style: none;
+    counter-reset: step-counter;
+}
+
+.steps-list li {
+    counter-increment: step-counter;
+    margin-bottom: 15px;
+    padding-left: 40px;
+    position: relative;
+    font-size: 1.1rem;
+    line-height: 1.6;
+}
+
+.steps-list li::before {
+    content: counter(step-counter);
+    position: absolute;
+    left: 0;
+    top: 0;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    width: 25px;
+    height: 25px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 0.9rem;
+}
+
+.start-section {
+    margin-top: 40px;
+}
+
+.btn-large {
+    padding: 18px 40px;
+    font-size: 1.3rem;
+    font-weight: 600;
+}
+
+.start-note {
+    margin-top: 15px;
+    color: #6c757d;
+    font-style: italic;
+}
+
+@media (max-width: 768px) {
+    .welcome-content h2 {
+        font-size: 2rem;
+    }
+    
+    .process-steps {
+        padding: 20px;
+    }
+    
+    .steps-list li {
+        font-size: 1rem;
+    }
+}
+</style>
+{% endblock %}

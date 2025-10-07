@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Resume Batch Processor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            font-size: 3rem;
+            margin-bottom: 10px;
+            font-weight: 300;
+        }
+
+        .header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+        }
+
+        .main-content {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+
+        .upload-section {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .upload-section h2 {
+            font-size: 2rem;
+            margin-bottom: 20px;
+            color: #2c3e50;
+        }
+
+        .upload-section p {
+            font-size: 1.1rem;
+            color: #7f8c8d;
+            margin-bottom: 30px;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .upload-form {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 30px;
+            border: 2px dashed #dee2e6;
+            transition: all 0.3s ease;
+        }
+
+        .upload-form:hover {
+            border-color: #667eea;
+            background: #f0f2ff;
+        }
+
+        .form-group {
+            margin-bottom: 25px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 10px;
+            font-weight: 600;
+            color: #2c3e50;
+            font-size: 1.1rem;
+        }
+
+        .form-group textarea {
+            width: 100%;
+            height: 120px;
+            padding: 15px;
+            border: 2px solid #e9ecef;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-family: inherit;
+            resize: vertical;
+            transition: border-color 0.3s ease;
+        }
+
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .file-upload {
+            position: relative;
+            display: inline-block;
+            width: 100%;
+        }
+
+        .file-upload input[type="file"] {
+            position: absolute;
+            left: -9999px;
+        }
+
+        .file-upload-label {
+            display: block;
+            padding: 20px;
+            background: #667eea;
+            color: white;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 1.1rem;
+            font-weight: 500;
+        }
+
+        .file-upload-label:hover {
+            background: #5a6fd8;
+            transform: translateY(-2px);
+        }
+
+        .file-info {
+            margin-top: 15px;
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+
+        .submit-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 1.2rem;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+            margin-top: 20px;
+        }
+
+        .submit-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .submit-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .results-section {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            border-radius: 10px;
+            padding: 25px;
+            margin-top: 30px;
+            display: none;
+        }
+
+        /* API status styles */
+        .api-status { border-radius: 8px; padding: 15px; margin-bottom: 25px; }
+        .api-ok { background: #d4edda; border: 1px solid #c3e6cb; }
+        .api-bad { background: #f8d7da; border: 1px solid #f5c6cb; }
+        .api-ok h4 { color: #155724; }
+        .api-bad h4 { color: #721c24; }
+
+        .success-message {
+            text-align: center;
+            margin-bottom: 25px;
+        }
+
+        .success-message h3 {
+            color: #155724;
+            margin-bottom: 15px;
+        }
+
+        .next-steps {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+
+        .next-steps h4 {
+            color: #495057;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-block;
+            text-align: center;
+        }
+
+        .btn-primary {
+            background: #007bff;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #0056b3;
+            transform: translateY(-2px);
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #545b62;
+            transform: translateY(-2px);
+        }
+
+        .btn-info {
+            background: #17a2b8;
+            color: white;
+        }
+
+        .btn-info:hover {
+            background: #117a8b;
+            transform: translateY(-2px);
+        }
+
+        .error-section {
+            display: none;
+            margin-top: 30px;
+            padding: 20px;
+            background: #ffeaea;
+            border-radius: 10px;
+            border-left: 4px solid #dc3545;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .footer {
+            text-align: center;
+            color: white;
+            margin-top: 40px;
+            opacity: 0.8;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .main-content {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header"></div>
+
+        <div class="main-content">
+            <div class="upload-section">
+                <h2>Batch Resume Processing</h2>
+                <p>Upload up to 25 resume PDFs and a job description to get AI-powered analysis, scoring, and ranking of candidates.</p>
+                
+                <!-- API Configuration Status -->
+                <div class="api-status {% if api_key_configured %}api-ok{% else %}api-bad{% endif %}">
+                    <h4 style="margin-bottom: 10px;">
+                        {% if api_key_configured %}
+                            {{ llm_provider|title }} API Configured
+                        {% else %}
+                            {{ llm_provider|title }} API Not Configured
+                        {% endif %}
+                    </h4>
+                    {% if api_key_configured %}
+                        <p style="margin: 0;">Model: {{ llm_model }} | Provider: {{ llm_provider|title }} | AI ranking enabled</p>
+                    {% else %}
+                        <p style="margin: 0;">Fallback ranking methods will be used</p>
+                        {% if config_issues %}
+                            <ul style="margin: 10px 0 0 0; padding-left: 20px;">
+                                {% for issue in config_issues %}
+                                    <li>{{ issue }}</li>
+                                {% endfor %}
+                            </ul>
+                        {% endif %}
+                    {% endif %}
+                </div>
+                
+                <form id="batchForm" class="upload-form" enctype="multipart/form-data">
+                    <div class="form-group" style="text-align:left;">
+                        <h4 style="color:#2c3e50; margin-bottom:10px;">Job Criteria</h4>
+                        <div style="margin-top:5px;">
+                            {% include 'resume_processor/_jd_criteria_fields.html' %}
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="resumes">Resume Files (PDF, max 25)</label>
+                        <div class="file-upload">
+                            <input type="file" id="resumes" name="resumes" multiple accept=".pdf" required>
+                            <label for="resumes" class="file-upload-label">
+                                Choose PDF Files
+                            </label>
+                        </div>
+                        <div class="file-info">
+                            Select multiple PDF files (maximum 25 resumes allowed)
+                        </div>
+                    </div>
+
+                    <div class="form-group" style="margin-top:10px;">
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                            <input type="checkbox" id="disableOcr" name="disable_ocr" />
+                            Disable OCR (faster; only use text layer)
+                        </label>
+                        <div style="font-size:12px;color:#6c757d;margin-top:4px;">If checked, image-only PDFs may extract no text.</div>
+                    </div>
+                    
+                    <button type="submit" class="submit-btn" id="submitBtn">
+                        Process Resumes
+                    </button>
+                </form>
+            </div>
+
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>Processing resumes... This may take a few minutes.</p>
+            </div>
+
+            <div class="results-section" id="results">
+                <h3>Processing Complete</h3>
+                <div id="resultsContent"></div>
+            </div>
+
+            <div class="error-section" id="error">
+                <h3>Processing Error</h3>
+                <div id="errorContent"></div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>&copy; 2025 Resume Processing & Analysis System</p>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('batchForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const submitBtn = document.getElementById('submitBtn');
+            const loading = document.getElementById('loading');
+            const results = document.getElementById('results');
+            const error = document.getElementById('error');
+            const resultsContent = document.getElementById('resultsContent');
+            const errorContent = document.getElementById('errorContent');
+            
+            // Reset display
+            results.style.display = 'none';
+            error.style.display = 'none';
+            loading.style.display = 'block';
+            
+            // Disable submit button
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Processing...';
+            
+            try {
+                const formData = new FormData();
+                // Raw JD textarea removed; server synthesizes JD from criteria if needed
+                if (document.getElementById('disableOcr').checked) {
+                    formData.append('disable_ocr', '1');
+                }
+                
+                const resumeFiles = document.getElementById('resumes').files;
+                if (resumeFiles.length === 0) {
+                    throw new Error('Please select at least one resume file.');
+                }
+                
+                if (resumeFiles.length > 25) {
+                    throw new Error('Maximum 25 resumes allowed.');
+                }
+                
+                for (let i = 0; i < resumeFiles.length; i++) {
+                    formData.append('resumes', resumeFiles[i]);
+                }
+
+                // Append JD criteria fields
+                const criteriaFields = [
+                  'position_title','experience_min_years','education_requirements',
+                  'must_have_skills','nice_to_have_skills','industry_experience',
+                  'responsibilities','keywords','location','seniority_level',
+                  'certifications','languages'
+                ];
+                criteriaFields.forEach(id => {
+                  const el = document.getElementById(id);
+                  if (el && el.value) {
+                    formData.append(id, el.value);
+                  }
+                });
+                
+                const response = await fetch('/', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    // Success
+                    // Keep last result for download
+                    window._lastBatchResult = result;
+                    resultsContent.innerHTML = `
+                        <div class="success-message">
+                            <h3>Processing Complete</h3>
+                            <p><strong>Resumes processed:</strong> ${result.resumes ? result.resumes.length : 0}</p>
+                            ${result.batch_summary ? `
+                                <p><strong>Top candidates:</strong> ${result.batch_summary.top_candidates ? result.batch_summary.top_candidates.join(', ') : 'None'}</p>
+                                <p><strong>Common gaps:</strong> ${result.batch_summary.common_gaps ? result.batch_summary.common_gaps.join(', ') : 'None'}</p>
+                                <p><strong>Notes:</strong> ${result.batch_summary.notes || 'None'}</p>
+                            ` : ''}
+                        </div>
+                        
+                        <div class="next-steps">
+                            <h4>Next Steps</h4>
+                            <div class="action-buttons">
+                                <a href="/resume/ranking/" class="btn btn-primary">View Rankings</a>
+                                <a href="/resume/all-batches/" class="btn btn-secondary">View All Batches</a>
+                                <button onclick="showDetailedResults()" class="btn btn-info">View Raw Data</button>
+                                <button onclick="downloadBatchJson()" class="btn btn-secondary">Download JSON</button>
+                            </div>
+                            <div class="quick-links" style="margin-top: 20px; text-align: center;">
+                                <p style="color: #6c757d; margin-bottom: 10px;">Quick Navigation:</p>
+                                <a href="/resume/ranking/" style="color: #007bff; text-decoration: none; font-weight: 600;">Go to Rankings Page</a>
+                            </div>
+                        </div>
+                        
+                        <div id="detailedResults" style="display: none; margin-top: 20px;">
+                            <details>
+                                <summary style="cursor: pointer; font-weight: bold;">Detailed Processing Results</summary>
+                                <pre style="background: white; padding: 15px; border-radius: 5px; margin-top: 10px; overflow-x: auto; white-space: pre-wrap;">${JSON.stringify(result, null, 2)}</pre>
+                            </details>
+                        </div>
+                    `;
+                    results.style.display = 'block';
+                } else {
+                    // Error
+                    errorContent.innerHTML = `<p>${result.error || 'Unknown error occurred'}</p>`;
+                    error.style.display = 'block';
+                }
+                
+            } catch (error) {
+                errorContent.innerHTML = `<p>Error: ${error.message}</p>`;
+                error.style.display = 'block';
+            } finally {
+                // Hide loading and re-enable submit button
+                loading.style.display = 'none';
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Process Resumes';
+            }
+        });
+
+        // File selection feedback
+        document.getElementById('resumes').addEventListener('change', function(e) {
+            const files = e.target.files;
+            const fileInfo = document.querySelector('.file-info');
+            
+            if (files.length > 0) {
+                fileInfo.innerHTML = `Selected ${files.length} file(s): ${Array.from(files).map(f => f.name).join(', ')}`;
+                fileInfo.style.color = '#28a745';
+            } else {
+                fileInfo.innerHTML = 'Select multiple PDF files (maximum 25 resumes allowed)';
+                fileInfo.style.color = '#6c757d';
+            }
+        });
+
+        function showDetailedResults() {
+            const detailedResultsDiv = document.getElementById('detailedResults');
+            if (detailedResultsDiv) {
+                detailedResultsDiv.style.display = detailedResultsDiv.style.display === 'none' ? 'block' : 'none';
+            }
+        }
+
+        function downloadBatchJson() {
+            try {
+                const data = window._lastBatchResult || {};
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                const ts = new Date().toISOString().replace(/[:.]/g, '-');
+                a.href = url;
+                a.download = `batch_result_${ts}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('Failed to download JSON');
+            }
+        }
+    </script>
+</body>
+</html> 

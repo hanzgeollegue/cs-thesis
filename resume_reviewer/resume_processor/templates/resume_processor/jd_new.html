@@ -1,0 +1,252 @@
+{% extends 'resume_processor/base.html' %}
+
+{% block title %}Job Description{% endblock %}
+
+{% block content %}
+<div class="jd-form-section">
+    <div class="breadcrumb">
+        <a href="{% url 'home' %}">Home</a> → <span>Job Description</span>
+    </div>
+    
+    <div class="stepper">
+        <div class="step active">1. Job Description</div>
+        <div class="step">2. Upload Resumes</div>
+        <div class="step">3. Processing</div>
+        <div class="step">4. Results</div>
+    </div>
+    
+    <h2>Define Your Job Requirements</h2>
+    <p>Tell us about the position you're hiring for. This helps our AI system find the best candidates.</p>
+    
+    <form method="post" class="jd-form">
+        {% csrf_token %}
+        
+        <div class="form-section">
+            <h3>Basic Information</h3>
+            
+            <div class="form-group">
+                <label for="position_title">Job Position/Title *</label>
+                <input type="text" id="position_title" name="position_title" 
+                       value="{{ last_jd_criteria.position_title|default:'' }}" 
+                       placeholder="e.g., Software Engineer, Data Scientist" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="seniority_level">Seniority Level</label>
+                <select id="seniority_level" name="seniority_level">
+                    <option value="">Select level</option>
+                    <option value="intern" {% if last_jd_criteria.seniority_level == 'intern' %}selected{% endif %}>Intern</option>
+                    <option value="junior" {% if last_jd_criteria.seniority_level == 'junior' %}selected{% endif %}>Junior</option>
+                    <option value="mid" {% if last_jd_criteria.seniority_level == 'mid' %}selected{% endif %}>Mid-level</option>
+                    <option value="senior" {% if last_jd_criteria.seniority_level == 'senior' %}selected{% endif %}>Senior</option>
+                    <option value="lead" {% if last_jd_criteria.seniority_level == 'lead' %}selected{% endif %}>Lead</option>
+                    <option value="staff" {% if last_jd_criteria.seniority_level == 'staff' %}selected{% endif %}>Staff</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="experience_min_years">Minimum Experience (years)</label>
+                <input type="number" id="experience_min_years" name="experience_min_years" 
+                       value="{{ last_jd_criteria.experience_min_years|default:'' }}" 
+                       min="0" max="20" placeholder="e.g., 3">
+            </div>
+        </div>
+        
+        <div class="form-section">
+            <h3>Skills & Requirements</h3>
+            
+            <div class="form-group">
+                <label for="must_have_skills">Must-Have Skills *</label>
+                <textarea id="must_have_skills" name="must_have_skills" 
+                          placeholder="List required skills separated by commas&#10;e.g., Python, React, SQL, AWS" required>{{ last_jd_criteria.must_have_skills|join:', ' }}</textarea>
+                <small>Separate skills with commas. These are required for the role.</small>
+            </div>
+            
+            <div class="form-group">
+                <label for="nice_to_have_skills">Nice-to-Have Skills</label>
+                <textarea id="nice_to_have_skills" name="nice_to_have_skills" 
+                          placeholder="List preferred skills separated by commas&#10;e.g., Docker, Kubernetes, GraphQL">{{ last_jd_criteria.nice_to_have_skills|join:', ' }}</textarea>
+                <small>These skills are preferred but not required.</small>
+            </div>
+            
+            <div class="form-group">
+                <label for="education_requirements">Education Requirements</label>
+                <input type="text" id="education_requirements" name="education_requirements" 
+                       value="{{ last_jd_criteria.education_requirements|default:'' }}" 
+                       placeholder="e.g., Bachelor's degree in Computer Science">
+            </div>
+        </div>
+        
+        <div class="form-section">
+            <h3>Additional Details</h3>
+            
+            <div class="form-group">
+                <label for="industry_experience">Industry Experience</label>
+                <input type="text" id="industry_experience" name="industry_experience" 
+                       value="{{ last_jd_criteria.industry_experience|default:'' }}" 
+                       placeholder="e.g., Fintech, Healthcare, E-commerce">
+            </div>
+            
+            <div class="form-group">
+                <label for="location">Location/Remote</label>
+                <input type="text" id="location" name="location" 
+                       value="{{ last_jd_criteria.location|default:'' }}" 
+                       placeholder="e.g., San Francisco, CA or Remote">
+            </div>
+            
+            <div class="form-group">
+                <label for="certifications">Certifications/Licenses</label>
+                <input type="text" id="certifications" name="certifications" 
+                       value="{{ last_jd_criteria.certifications|default:'' }}" 
+                       placeholder="e.g., AWS Certified, PMP">
+            </div>
+            
+            <div class="form-group">
+                <label for="languages">Languages</label>
+                <input type="text" id="languages" name="languages" 
+                       value="{{ last_jd_criteria.languages|default:'' }}" 
+                       placeholder="e.g., English, Spanish">
+            </div>
+        </div>
+        
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Continue to Upload Resumes</button>
+            <a href="{% url 'home' %}" class="btn btn-secondary">Back to Home</a>
+        </div>
+    </form>
+</div>
+
+<style>
+.breadcrumb {
+    margin-bottom: 20px;
+    color: #6c757d;
+}
+
+.breadcrumb a {
+    color: #007bff;
+    text-decoration: none;
+}
+
+.breadcrumb a:hover {
+    text-decoration: underline;
+}
+
+.stepper {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 30px;
+    gap: 20px;
+}
+
+.step {
+    padding: 10px 20px;
+    border-radius: 20px;
+    background: #e9ecef;
+    color: #6c757d;
+    font-weight: 500;
+}
+
+.step.active {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+}
+
+.jd-form-section h2 {
+    text-align: center;
+    color: #2c3e50;
+    margin-bottom: 10px;
+    font-size: 2rem;
+}
+
+.jd-form-section p {
+    text-align: center;
+    color: #7f8c8d;
+    margin-bottom: 30px;
+    font-size: 1.1rem;
+}
+
+.form-section {
+    background: #f8f9fa;
+    border-radius: 15px;
+    padding: 25px;
+    margin-bottom: 25px;
+}
+
+.form-section h3 {
+    color: #2c3e50;
+    margin-bottom: 20px;
+    font-size: 1.3rem;
+    border-bottom: 2px solid #667eea;
+    padding-bottom: 10px;
+}
+
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.form-group input,
+.form-group select,
+.form-group textarea {
+    width: 100%;
+    padding: 12px;
+    border: 2px solid #e9ecef;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-family: inherit;
+    transition: border-color 0.3s ease;
+}
+
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.form-group textarea {
+    height: 80px;
+    resize: vertical;
+}
+
+.form-group small {
+    display: block;
+    margin-top: 5px;
+    color: #6c757d;
+    font-size: 0.9rem;
+}
+
+.form-actions {
+    text-align: center;
+    margin-top: 30px;
+    display: flex;
+    gap: 15px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+@media (max-width: 768px) {
+    .stepper {
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+    }
+    
+    .form-section {
+        padding: 20px;
+    }
+    
+    .form-actions {
+        flex-direction: column;
+        align-items: center;
+    }
+}
+</style>
+{% endblock %}

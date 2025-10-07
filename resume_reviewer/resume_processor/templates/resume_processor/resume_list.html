@@ -1,0 +1,101 @@
+{% extends 'resume_processor/base.html' %}
+
+{% block title %}Resume List{% endblock %}
+{% block header_title %}Resume List{% endblock %}
+{% block header_subtitle %}View all processed resumes and their analysis results{% endblock %}
+
+{% block content %}
+<div class="resume-list-section">
+    <div class="card">
+        <h3>📋 Processed Resumes</h3>
+        <p>View all resumes that have been processed through the system.</p>
+        
+        {% if resumes %}
+            <div style="margin-top: 20px;">
+                {% for resume in resumes %}
+                <div class="card" style="margin-bottom: 15px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+                        <div>
+                            <h4 style="color: #2c3e50; margin-bottom: 8px;">{{ resume.filename }}</h4>
+                            <p style="color: #7f8c8d; margin-bottom: 5px;">
+                                <strong>Candidate ID:</strong> {{ resume.candidate_id }}
+                            </p>
+                            <p style="color: #7f8c8d; margin-bottom: 5px;">
+                                <strong>Status:</strong> 
+                                {% if resume.processing_status == 'completed' %}
+                                    <span style="padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 500; background: #d4edda; color: #155724;">
+                                        {{ resume.processing_status|title }}
+                                    </span>
+                                {% elif resume.processing_status == 'processing' %}
+                                    <span style="padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 500; background: #fff3cd; color: #856404;">
+                                        {{ resume.processing_status|title }}
+                                    </span>
+                                {% elif resume.processing_status == 'failed' %}
+                                    <span style="padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 500; background: #f8d7da; color: #721c24;">
+                                        {{ resume.processing_status|title }}
+                                    </span>
+                                {% else %}
+                                    <span style="padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 500; background: #e2e3e5; color: #383d41;">
+                                        {{ resume.processing_status|title }}
+                                    </span>
+                                {% endif %}
+                            </p>
+                            <p style="color: #7f8c8d; margin-bottom: 5px;">
+                                <strong>Uploaded:</strong> {{ resume.uploaded_at|date:"M d, Y H:i" }}
+                            </p>
+                            {% if resume.processed_at %}
+                            <p style="color: #7f8c8d; margin-bottom: 5px;">
+                                <strong>Processed:</strong> {{ resume.processed_at|date:"M d, Y H:i" }}
+                            </p>
+                            {% endif %}
+                        </div>
+                        
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <a href="{% url 'resume_processor:resume_detail' resume.id %}" class="btn">
+                                👁️ View Details
+                            </a>
+                            <a href="{% url 'resume_processor:resume_structured' resume.id %}" class="btn btn-secondary">
+                                📊 Structured View
+                            </a>
+                            <a href="{% url 'resume_processor:resume_json' resume.id %}" class="btn btn-secondary">
+                                📄 JSON Data
+                            </a>
+                            <a href="{% url 'resume_processor:download_json' resume.id %}" class="btn btn-secondary">
+                                💾 Download
+                            </a>
+                        </div>
+                    </div>
+                    
+                    {% if resume.error_message %}
+                    <div style="margin-top: 15px; padding: 10px; background: #ffeaea; border-radius: 5px; border-left: 3px solid #dc3545;">
+                        <strong>Error:</strong> {{ resume.error_message }}
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div style="text-align: center; padding: 40px 20px;">
+                <p style="color: #7f8c8d; font-size: 1.1rem; margin-bottom: 20px;">
+                    No resumes have been processed yet.
+                </p>
+                <a href="/resume/upload/" class="btn">
+                    📤 Upload Your First Resume
+                </a>
+            </div>
+        {% endif %}
+    </div>
+    
+    <div style="text-align: center; margin-top: 30px;">
+        <a href="/resume/upload/" class="btn btn-secondary">
+            📤 Upload New Resume
+        </a>
+        <a href="/resume/batch-upload/" class="btn btn-secondary" style="margin-left: 15px;">
+            📚 Batch Upload
+        </a>
+        <a href="/" class="btn btn-secondary" style="margin-left: 15px;">
+            🏠 Back to Home
+        </a>
+    </div>
+</div>
+{% endblock %} 

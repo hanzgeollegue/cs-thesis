@@ -1,0 +1,55 @@
+{% extends 'resume_processor/base.html' %}
+
+{% block title %}Single Resume Upload{% endblock %}
+{% block header_title %}Single Resume Upload{% endblock %}
+{% block header_subtitle %}Upload individual resumes for processing and analysis{% endblock %}
+
+{% block content %}
+<div class="upload-section">
+    <div class="card">
+        <h3>Upload Resume PDF</h3>
+        <p>Upload a single resume PDF file for processing and analysis.</p>
+        
+        <form method="post" enctype="multipart/form-data" style="margin-top: 20px;">
+            {% csrf_token %}
+            <div style="margin-bottom: 20px;">
+                <label for="resume_file" style="display: block; margin-bottom: 10px; font-weight: 600; color: #2c3e50;">
+                    Select PDF File
+                </label>
+                <input type="file" name="resume_file" id="resume_file" accept=".pdf" required 
+                       style="width: 100%; padding: 12px; border: 2px solid #e9ecef; border-radius: 8px; font-size: 1rem;">
+            </div>
+
+            <details style="margin-top: 10px;">
+                <summary style="cursor:pointer; font-weight:600; color:#2c3e50;">Optional: Structured JD Criteria</summary>
+                <div style="margin-top:15px;">
+                    {% include 'resume_processor/_jd_criteria_fields.html' %}
+                </div>
+            </details>
+            
+            <button type="submit" class="btn">
+                📤 Upload & Process
+            </button>
+        </form>
+    </div>
+    
+    <div class="card">
+        <h3>Processing Features</h3>
+        <ul style="color: #7f8c8d; line-height: 1.8; padding-left: 20px;">
+            <li>Advanced PDF text extraction with OCR fallback</li>
+            <li>Intelligent section detection and normalization</li>
+            <li>Structured data extraction for analysis</li>
+            <li>JSON output for further processing</li>
+        </ul>
+    </div>
+    
+    <div style="text-align: center; margin-top: 30px;">
+        <a href="/resume/batch-upload/" class="btn btn-secondary">
+            📚 Process Multiple Resumes
+        </a>
+        <a href="/resume/list/" class="btn btn-secondary" style="margin-left: 15px;">
+            📋 View All Resumes
+        </a>
+    </div>
+</div>
+{% endblock %} 
