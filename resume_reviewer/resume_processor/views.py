@@ -11,7 +11,7 @@ from .models import Resume
 from .enhanced_pdf_parser import PDFParser
 from .batch_processor import BatchProcessor
 from .jd_criteria import parse_criteria_from_post, build_jd_text
-from .config import get_openai_config, get_llm_config, validate_config
+from .config import get_llm_config, validate_config
 from .async_processor import start_batch_processing_async, get_task
 
 logger = logging.getLogger(__name__)
@@ -224,11 +224,15 @@ def ranking_list(request):
         # Add candidate names and friendly rationales
         for i, candidate in enumerate(candidates):
             try:
-                candidate['display_name'] = get_candidate_display_name(candidate)
+                # Enhanced candidate name extraction for ranking_list
+                candidate['display_name'] = extract_candidate_name_robust(candidate)
                 candidate['friendly_rationale'] = candidate.get('scores', {}).get('rationale', 'Overall Match: Unable to assess')
                 # Pre-calculate percentage for display
                 final_score = candidate.get('scores', {}).get('final_score', 0.0)
                 candidate['final_score_percentage'] = round(float(final_score) * 100, 1)
+                # Pre-calculate coverage percentage for display
+                coverage = candidate.get('scores', {}).get('coverage', 0.0)
+                candidate['coverage_percentage'] = round(float(coverage) * 100, 1)
                 logger.info(f"Candidate {i}: {candidate.get('display_name', 'Unknown')}")
             except Exception as e:
                 logger.error(f"Error processing candidate {i}: {e}")
@@ -265,43 +269,240 @@ def _get_current_batch_for_export(request):
     return batch_results
 
 def export_results_json(request):
-    """Download current batch results as a JSON file."""
+    """Export with versioned schema v2.0."""
+    from django.utils import timezone
+    
     batch = _get_current_batch_for_export(request)
     if batch is None:
         messages.warning(request, 'No batch results available to export.')
         return redirect('resume_upload')
 
-    # Produce simplified export shape for easier debugging
     try:
-        simplified = {
-            'job': batch.get('job_description_digest', {}),
+        # Create BatchProcessor instance for validation
+        processor = BatchProcessor()
+        criteria = batch.get('job_description_digest', {}).get('criteria', {})
+        
+        export_data = {
+            'schema_version': '2.1',
+            'exported_at': timezone.now().isoformat(),
+            'job': {
+                'title': criteria.get('position_title', ''),
+                'required_skills': criteria.get('must_have_skills', []),
+                'nice_to_have_skills': criteria.get('nice_to_have_skills', []),
+                'experience_years': criteria.get('experience_min_years', 0)
+            },
+            # Comprehensive job description debugging data
+            'job_debug': {
+                'full_criteria': criteria,
+                'position_title': criteria.get('position_title', ''),
+                'must_have_skills': criteria.get('must_have_skills', []),
+                'nice_to_have_skills': criteria.get('nice_to_have_skills', []),
+                'experience_min_years': criteria.get('experience_min_years', 0),
+                'seniority_level': criteria.get('seniority_level', ''),
+                'job_description_text': batch.get('job_description_digest', {}).get('text', ''),
+                'job_description_length': len(batch.get('job_description_digest', {}).get('text', '')),
+                'total_required_skills': len(criteria.get('must_have_skills', [])),
+                'total_nice_skills': len(criteria.get('nice_to_have_skills', []))
+            },
+            # Batch-level debugging data
+            'batch_debug': {
+                'total_candidates': len(batch.get('resumes', [])),
+                'batch_id': batch.get('id', ''),
+                'processing_timestamp': batch.get('processing_timestamp', ''),
+                'batch_stats': {
+                    'score_range': {
+                        'min_final_score': min([r.get('scores', {}).get('final_score', 0.0) for r in batch.get('resumes', [])], default=0.0),
+                        'max_final_score': max([r.get('scores', {}).get('final_score', 0.0) for r in batch.get('resumes', [])], default=0.0),
+                        'avg_final_score': sum([r.get('scores', {}).get('final_score', 0.0) for r in batch.get('resumes', [])]) / len(batch.get('resumes', [])) if batch.get('resumes', []) else 0.0
+                    },
+                    'coverage_range': {
+                        'min_coverage': min([r.get('scores', {}).get('coverage', 0.0) for r in batch.get('resumes', [])], default=0.0),
+                        'max_coverage': max([r.get('scores', {}).get('coverage', 0.0) for r in batch.get('resumes', [])], default=0.0),
+                        'avg_coverage': sum([r.get('scores', {}).get('coverage', 0.0) for r in batch.get('resumes', [])]) / len(batch.get('resumes', [])) if batch.get('resumes', []) else 0.0
+                    },
+                    'parsing_stats': {
+                        'parsing_ok_count': sum([1 for r in batch.get('resumes', []) if r.get('parsed', {}).get('metadata', {}).get('parsing_ok', True)]),
+                        'parsing_failed_count': sum([1 for r in batch.get('resumes', []) if not r.get('parsed', {}).get('metadata', {}).get('parsing_ok', True)])
+                    }
+                }
+            },
             'candidates': []
         }
+        
         for c in batch.get('resumes', []):
-            s = c.get('scores', {}) or {}
-            simplified['candidates'].append({
+            scores = c.get('scores', {})
+            parsed = c.get('parsed', {})
+            
+            # Build parse report
+            parse_report = {
+                'raw_text_len': len((parsed.get('raw_text') or '').strip()) if isinstance(parsed.get('raw_text', ''), str) else 0,
+                'section_count': len((parsed.get('sections') or {})) if isinstance(parsed.get('sections', {}), dict) else 0,
+                'headers': list((parsed.get('sections') or {}).keys()) if isinstance(parsed.get('sections', {}), dict) else [],
+            }
+
+            # Optional CE debug information (if present on scores)
+            ce_debug = {
+                'entered_ce_builder': scores.get('ce_entered_builder', None),
+                'evidence_tokens_available': scores.get('ce_evidence_tokens', None),
+                'num_pairs_before': scores.get('ce_pairs_before', None),
+                'num_pairs_after': scores.get('ce_pairs_after', None),
+                'ce_raw': scores.get('ce_raw', None),
+                'ce_blocked_reason': scores.get('ce_blocked_reason', None),
+                'ce_timed_out': scores.get('ce_timed_out', None),
+            }
+
+            export_data['candidates'].append({
                 'id': c.get('id'),
                 'name': get_candidate_display_name(c),
-                'raw_scores': {
-                    'tfidf_combined': float(s.get('combined_tfidf', 0.0) or 0.0),
-                    'sbert_raw': float(s.get('sbert_score', s.get('semantic_score', 0.0)) or 0.0),
-                    'ce_raw': float(s.get('ce_score', 0.0) or 0.0),
-                    'coverage': s.get('coverage', 0.0),
-                    'has_match_experience': bool(s.get('has_match_experience', False)),
-                    'matched_required_skills': s.get('matched_required_skills', []) or []
+                'scores': {
+                    'raw': {
+                        'tfidf': float(scores.get('combined_tfidf', 0.0)),
+                        'sbert': float(scores.get('sbert_score', 0.0)),
+                        'ce': float(scores.get('ce_score', 0.0))
+                    },
+                    'normalized': {
+                        'tfidf': float(scores.get('tfidf_norm', 0.0)),
+                        'sbert': float(scores.get('semantic_norm', 0.0)),
+                        'ce': float(scores.get('ce_norm', 0.0))
+                    },
+                    'final': float(scores.get('final_score', 0.0)),
+                    'coverage': float(scores.get('coverage', 0.0))
                 },
-                'normalized_scores': {
-                    'tfidf_norm': float(s.get('tfidf_norm', 0.0) or 0.0),
-                    'semantic_norm': float(s.get('semantic_norm', 0.0) or 0.0),
-                    'ce_norm': float(s.get('ce_norm', 0.0) or 0.0)
+                'skills': {
+                    'matched_required': scores.get('matched_required_skills', []),
+                    'missing_required': scores.get('missing_skills', []),
+                    'matched_nice': scores.get('matched_nice_skills', [])
                 },
-                'final_score': float(s.get('final_score', 0.0) or 0.0),
-                'explanation': s.get('rationale', 'Overall Match: Unable to assess')
+                'experience': parsed.get('experience', []),
+                'education': parsed.get('education', []),
+                'projects': parsed.get('projects', []),
+                'health': {
+                    'parsing_ok': parsed.get('metadata', {}).get('parsing_ok', True),
+                    'skills_ok': len(scores.get('matched_required_skills', [])) > 0
+                },
+                'parse_report': parse_report,
+                # Raw parsing data
+                'parsed_data': {
+                    'skills': parsed.get('skills', []),
+                    'experience': parsed.get('experience', []),
+                    'education': parsed.get('education', []),
+                    'projects': parsed.get('projects', []),
+                    'certifications': parsed.get('certifications', []),
+                    'languages': parsed.get('languages', []),
+                    'sections': parsed.get('sections', {}),
+                    'raw_text': parsed.get('raw_text', ''),
+                    'metadata': parsed.get('metadata', {}),
+                    'ce_pairs': scores.get('ce_pairs', [])
+                },
+                # Comprehensive debugging data
+                'debug_data': {
+                    # TF-IDF debugging
+                    'tfidf_debug': {
+                        'section_scores': {
+                            'experience': scores.get('tfidf_experience_score', 0.0),
+                            'education': scores.get('tfidf_education_score', 0.0),
+                            'skills': scores.get('tfidf_skills_score', 0.0),
+                            'projects': scores.get('tfidf_projects_score', 0.0)
+                        },
+                        'taxonomy_score': scores.get('tfidf_taxonomy_score', 0.0),
+                        'section_tfidf': scores.get('section_tfidf', 0.0),
+                        'combined_tfidf': scores.get('combined_tfidf', 0.0),
+                        'tfidf_norm': scores.get('tfidf_norm', 0.0),
+                        'matched_skills_count': len(scores.get('matched_required_skills', [])),
+                        'missing_skills_count': len(scores.get('missing_skills', [])),
+                        'matched_skills_list': scores.get('matched_required_skills', []),
+                        'missing_skills_list': scores.get('missing_skills', [])
+                    },
+                    # SBERT debugging
+                    'sbert_debug': {
+                        'sbert_score': scores.get('sbert_score', 0.0),
+                        'semantic_score': scores.get('semantic_score', 0.0),
+                        'semantic_norm': scores.get('semantic_norm', 0.0),
+                        'has_match_skills': scores.get('has_match_skills', False),
+                        'has_match_experience': scores.get('has_match_experience', False)
+                    },
+                    # Cross-Encoder debugging
+                    'ce_debug': {
+                        'ce_score': scores.get('ce_score', 0.0),
+                        'ce_norm': scores.get('ce_norm', 0.0),
+                        'cross_encoder': scores.get('cross_encoder', 0.0),
+                        'cross_encoder_raw': scores.get('cross_encoder_raw', 0.0),
+                        'cross_encoder_stability': scores.get('cross_encoder_stability', 0.0),
+                        'cross_encoder_confidence': scores.get('cross_encoder_confidence', 0.0),
+                        'ce_channel_healthy': scores.get('ce_channel_healthy', True),
+                        'ce_pairs_count': len(scores.get('ce_pairs', [])),
+                        'ce_entered_builder': scores.get('ce_entered_builder', False),
+                        'ce_pairs_generated': scores.get('ce_pairs_generated', 0),
+                        'ce_blocked_reason': scores.get('ce_blocked_reason', ''),
+                        'ce_timed_out': scores.get('ce_timed_out', False),
+                        'ce_pairs_sample': scores.get('ce_pairs', [])[:3] if scores.get('ce_pairs', []) else []  # First 3 CE pairs for debugging
+                    },
+                    # Coverage and matching debugging
+                    'coverage_debug': {
+                        'coverage': scores.get('coverage', 0.0),
+                        'coverage_percentage': round(float(scores.get('coverage', 0.0)) * 100, 1),
+                        'required_skills_total': len(criteria.get('must_have_skills', [])),
+                        'matched_required_skills': scores.get('matched_required_skills', []),
+                        'matched_nice_skills': scores.get('matched_nice_skills', []),
+                        'missing_skills': scores.get('missing_skills', [])
+                    },
+                    # Section content debugging
+                    'section_content_debug': {
+                        'experience_content_length': len(parsed.get('sections', {}).get('experience', '')),
+                        'education_content_length': len(parsed.get('sections', {}).get('education', '')),
+                        'skills_content_length': len(parsed.get('sections', {}).get('skills', '')),
+                        'misc_content_length': len(parsed.get('sections', {}).get('misc', '')),
+                        'raw_text_length': len(parsed.get('raw_text', '')),
+                        'experience_content_preview': parsed.get('sections', {}).get('experience', '')[:200] + '...' if len(parsed.get('sections', {}).get('experience', '')) > 200 else parsed.get('sections', {}).get('experience', ''),
+                        'education_content_preview': parsed.get('sections', {}).get('education', '')[:200] + '...' if len(parsed.get('sections', {}).get('education', '')) > 200 else parsed.get('sections', {}).get('education', ''),
+                        'skills_content_preview': parsed.get('sections', {}).get('skills', '')[:200] + '...' if len(parsed.get('sections', {}).get('skills', '')) > 200 else parsed.get('sections', {}).get('skills', ''),
+                        'raw_text_preview': parsed.get('raw_text', '')[:500] + '...' if len(parsed.get('raw_text', '')) > 500 else parsed.get('raw_text', ''),
+                        'section_distribution': {
+                            'experience_percentage': round(len(parsed.get('sections', {}).get('experience', '')) / max(len(parsed.get('raw_text', '')), 1) * 100, 1),
+                            'education_percentage': round(len(parsed.get('sections', {}).get('education', '')) / max(len(parsed.get('raw_text', '')), 1) * 100, 1),
+                            'skills_percentage': round(len(parsed.get('sections', {}).get('skills', '')) / max(len(parsed.get('raw_text', '')), 1) * 100, 1),
+                            'misc_percentage': round(len(parsed.get('sections', {}).get('misc', '')) / max(len(parsed.get('raw_text', '')), 1) * 100, 1)
+                        }
+                    },
+                    # Parsing debugging
+                    'parsing_debug': {
+                        'parsing_ok': parsed.get('metadata', {}).get('parsing_ok', True),
+                        'parse_reason': parsed.get('metadata', {}).get('parse_reason', ''),
+                        'extracted_chars': parsed.get('metadata', {}).get('extracted_chars', 0),
+                        'section_count': parsed.get('metadata', {}).get('section_count', 0),
+                        'pages_total': parsed.get('metadata', {}).get('pages_total', 0),
+                        'pages_processed': parsed.get('metadata', {}).get('pages_processed', 0),
+                        'source_file': parsed.get('metadata', {}).get('source_file', ''),
+                        'processing_status': parsed.get('metadata', {}).get('processing_status', '')
+                    },
+                    # Final score debugging
+                    'final_score_debug': {
+                        'final_score': scores.get('final_score', 0.0),
+                        'final_score_percentage': round(float(scores.get('final_score', 0.0)) * 100, 1),
+                        'final_pre_llm': scores.get('final_pre_llm', 0.0),
+                        'final_pre_llm_display': scores.get('final_pre_llm_display', 0.0),
+                        'gate_threshold': scores.get('gate_threshold', 0.0),
+                        'gate_reason': scores.get('gate_reason', ''),
+                        'content_relevance_label': scores.get('content_relevance_label', 'N/A'),
+                        'keyword_match_label': scores.get('keyword_match_label', 'N/A')
+                    }
+                },
+                'ce_debug': ce_debug,
+                # NLG fields
+                'analysis': {
+                    'text': scores.get('analysis_text', ''),
+                    'bullets': scores.get('analysis_bullets', []),
+                    'facts': scores.get('analysis_facts', {}),
+                    'metadata': scores.get('analysis_metadata', {})
+                }
             })
-        data_bytes = json.dumps(simplified, ensure_ascii=False, indent=2).encode('utf-8')
-    except Exception:
+        
+        data_bytes = json.dumps(export_data, ensure_ascii=False, indent=2).encode('utf-8')
+    except Exception as e:
+        logger.error(f"Error in export_results_json: {e}")
         # Fallback to full batch on any error
         data_bytes = json.dumps(batch, ensure_ascii=False, indent=2).encode('utf-8')
+    
     response = HttpResponse(data_bytes, content_type='application/json; charset=utf-8')
     filename = 'results.json'
     try:
@@ -335,7 +536,8 @@ def export_results_csv(request):
         'id', 'display_name', 'final_score', 'final_score_%',
         'sbert_score', 'ce_score', 'tfidf_section', 'tfidf_skill',
         'coverage', 'gate_threshold', 'has_match_skills', 'has_match_experience',
-        'matched_required_count', 'must_have_total', 'missing_required', 'rationale'
+        'matched_required_count', 'must_have_total', 'missing_required', 'rationale', 
+        'analysis_text', 'analysis_bullets', 'batch_percentile', 'gap_from_top'
     ])
 
     for c in resumes:
@@ -354,12 +556,21 @@ def export_results_csv(request):
         matched_required = scores.get('matched_required_skills', []) or []
         missing = [s for s in must_have if s not in matched_required] if must_have else []
         rationale = scores.get('rationale', '')
+        analysis_text = scores.get('analysis_text', '')
+        analysis_bullets = scores.get('analysis_bullets', [])
+        
+        # Extract batch metrics from analysis metadata
+        analysis_metadata = scores.get('analysis_metadata', {})
+        batch_context = analysis_metadata.get('batch_context', {})
+        batch_percentile = batch_context.get('percentile', 50) if batch_context else 50
+        gap_from_top = batch_context.get('gap_from_top', 0) if batch_context else 0
 
         writer.writerow([
             c.get('id'), display_name, f"{final_score:.6f}", f"{final_pct:.2f}",
             f"{sbert:.6f}", f"{ce:.6f}", f"{tfidf_sec:.6f}", f"{tfidf_skill:.6f}",
             '' if coverage is None else coverage, '' if threshold is None else threshold,
-            has_ms, has_exp, len(matched_required), len(must_have), '|'.join(missing), rationale
+            has_ms, has_exp, len(matched_required), len(must_have), '|'.join(missing), 
+            rationale, analysis_text, '|'.join(analysis_bullets), f"{batch_percentile:.1f}", f"{gap_from_top:.1f}"
         ])
 
     data = output.getvalue().encode('utf-8')
@@ -375,32 +586,87 @@ def export_results_csv(request):
 
 def candidate_detail(request, candidate_id):
     """Detail view for one candidate."""
-    # Check if batch exists
-    if 'batch_results' not in request.session:
-        messages.warning(request, 'No batch results available.')
-        return redirect('resume_upload')
-    
-    batch_results = request.session.get('batch_results', {})
-    candidates = batch_results.get('resumes', [])
-    
-    # Find candidate by ID
-    candidate = None
-    for c in candidates:
-        if c.get('id') == candidate_id:
-            candidate = c
-            break
-    
-    if not candidate:
-        messages.error(request, 'Candidate not found.')
+    try:
+        # Check if batch exists
+        if 'batch_results' not in request.session:
+            messages.warning(request, 'No batch results available.')
+            return redirect('resume_upload')
+        
+        batch_results = request.session.get('batch_results', {})
+        candidates = batch_results.get('resumes', [])
+        
+        # Find candidate by ID (handle both string and int IDs)
+        candidate = None
+        for c in candidates:
+            if str(c.get('id')) == str(candidate_id):
+                candidate = c
+                break
+        
+        if not candidate:
+            messages.error(request, 'Candidate not found.')
+            return redirect('ranking_list')
+        
+        # Extract and structure candidate data according to the expected contract
+        scores = candidate.get('scores', {})
+        parsed = candidate.get('parsed', {})
+        must_have_skills = batch_results.get('job_description_digest', {}).get('criteria', {}).get('must_have_skills', [])
+        
+        # Handle skills with proficiency (new format)
+        # Process matched skills - now they are consistent strings
+        matched_required_skills = scores.get('matched_required_skills', [])
+        matched_nice_skills = scores.get('matched_nice_skills', [])
+        
+        # For backward compatibility, create the old format
+        matched_skills = matched_required_skills.copy()
+        matched_skills_raw = [{'skill_id': skill, 'proficiency': None} for skill in matched_required_skills]
+        
+        candidate_data = {
+            'id': candidate.get('id'),
+            'name': extract_candidate_name_robust(candidate),
+            'rank': 1,  # Will be calculated based on position in sorted list
+            'final_score_pct': round(float(scores.get('final_score', 0.0)) * 100, 1),
+            'coverage_pct': round(float(scores.get('coverage', 0.0)) * 100, 1),
+            'skills_matched': len(matched_skills_raw),
+            'skills_required': len(must_have_skills),
+            'experience': scores.get('has_match_experience', False),
+            'content_relevance_label': scores.get('content_relevance_label', 'N/A'),
+            'keyword_match_label': scores.get('keyword_match_label', 'N/A'),
+            
+            # Skills with new structure
+            'matched_skills': matched_skills,  # For backward compatibility
+            'matched_skills_with_proficiency': matched_skills_raw,  # For backward compatibility
+            'matched_required_skills': matched_required_skills,
+            'matched_nice_skills': matched_nice_skills,
+            'missing_skills': scores.get('missing_skills', []),
+            
+            # Structured sections
+            'education': parsed.get('education', []),  # [{degree, school, year}]
+            'experience_items': parsed.get('experience', []),  # [{title, company, start_date, end_date, bullets}]
+            'projects': parsed.get('projects', []),  # [{name, summary, technologies}]
+            
+            # NLG analysis (prefer new analysis_text, fallback to rationale)
+            'analysis_text': scores.get('analysis_text') or scores.get('rationale', 'Overall Match: Unable to assess'),
+            'analysis_facts': scores.get('analysis_facts', {}),
+            'analysis_bullets': scores.get('analysis_bullets', []),
+            'analysis_metadata': scores.get('analysis_metadata', {})
+        }
+        
+        # Calculate rank based on final score
+        sorted_candidates = sorted(candidates, key=lambda x: float(x.get('scores', {}).get('final_score', 0.0)), reverse=True)
+        for i, c in enumerate(sorted_candidates):
+            if str(c.get('id')) == str(candidate_id):
+                candidate_data['rank'] = i + 1
+                break
+        
+        return render(request, 'resume_processor/candidate_detail.html', {
+            'candidate': candidate_data,
+            'show_nav': True
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in candidate_detail: {e}", exc_info=True)
+        messages.error(request, f'Error loading candidate details: {str(e)}')
         return redirect('ranking_list')
-    
-    candidate['display_name'] = get_candidate_display_name(candidate)
-    candidate['friendly_rationale'] = candidate.get('scores_snapshot', {}).get('rationale', 'Overall Match: Unable to assess')
-    
-    return render(request, 'resume_processor/candidate_detail.html', {
-        'candidate': candidate,
-        'show_nav': True
-    })
 
 def candidate_compare(request):
     """Compare 2-3 candidates side by side."""
@@ -411,6 +677,7 @@ def candidate_compare(request):
     
     batch_results = request.session.get('batch_results', {})
     candidates = batch_results.get('resumes', [])
+    jd_criteria = batch_results.get('job_description_digest', {}).get('criteria', {})
     
     # Get candidate IDs from query params
     candidate_ids = request.GET.getlist('ids')
@@ -425,9 +692,10 @@ def candidate_compare(request):
     compare_candidates = []
     for cid in candidate_ids:
         for c in candidates:
-            if c.get('id') == int(cid):
+            # Compare IDs as strings since they are UUIDs
+            if str(c.get('id')) == str(cid):
                 c['display_name'] = get_candidate_display_name(c)
-                c['friendly_rationale'] = c.get('scores_snapshot', {}).get('rationale', 'Overall Match: Unable to assess')
+                c['friendly_rationale'] = c.get('scores', {}).get('analysis_text') or c.get('scores', {}).get('rationale', 'Overall Match: Unable to assess')
                 compare_candidates.append(c)
                 break
     
@@ -435,20 +703,179 @@ def candidate_compare(request):
         messages.error(request, 'Could not find selected candidates.')
         return redirect('ranking_list')
     
+    # Generate pairwise comparisons
+    pairwise_comparisons = []
+    try:
+        from .nlg_generator import generate_pairwise_comparison
+        
+        # Generate all pairwise comparisons
+        for i in range(len(compare_candidates)):
+            for j in range(i + 1, len(compare_candidates)):
+                candidate_a = compare_candidates[i]
+                candidate_b = compare_candidates[j]
+                
+                comparison = generate_pairwise_comparison(candidate_a, candidate_b, jd_criteria)
+                
+                # Add candidate names to the comparison for template use
+                comparison.candidate_a_name = candidate_a.get('display_name', 'Unknown')
+                comparison.candidate_b_name = candidate_b.get('display_name', 'Unknown')
+                
+                pairwise_comparisons.append(comparison)
+                
+    except ImportError as e:
+        logger.warning(f"NLG generator not available for comparisons: {e}")
+        pairwise_comparisons = []
+    except Exception as e:
+        logger.error(f"Error generating pairwise comparisons: {e}")
+        pairwise_comparisons = []
+    
+    # Get job description criteria for skills calculation
+    jd_criteria = batch_results.get('job_description_digest', {}).get('criteria', {})
+    must_have_skills = jd_criteria.get('must_have_skills', [])
+    
     return render(request, 'resume_processor/candidate_compare.html', {
         'candidates': compare_candidates,
+        'pairwise_comparisons': pairwise_comparisons,
+        'must_have_skills_count': len(must_have_skills),
         'show_nav': True
     })
 
+def extract_candidate_name_robust(candidate_data):
+    """Extract candidate name from various data structures in ranking_list view."""
+    try:
+        # Try multiple possible locations for candidate name
+        candidate_name = None
+        
+        # Check direct fields
+        candidate_name = (
+            candidate_data.get('candidate_name') or
+            candidate_data.get('name') or
+            candidate_data.get('display_name') or
+            candidate_data.get('parsed_name')
+        )
+        
+        # Check nested structures
+        if not candidate_name:
+            # Check parsed data
+            parsed = candidate_data.get('parsed', {})
+            if isinstance(parsed, dict):
+                candidate_name = (
+                    parsed.get('candidate_name') or
+                    parsed.get('name') or
+                    parsed.get('parsed_name') or
+                    (isinstance(parsed.get('profile'), dict) and parsed.get('profile', {}).get('name')) or
+                    (isinstance(parsed.get('summary'), dict) and parsed.get('summary', {}).get('candidate_name'))
+                )
+        
+        # Check meta data
+        if not candidate_name:
+            meta = candidate_data.get('meta', {})
+            if isinstance(meta, dict):
+                candidate_name = meta.get('candidate_name') or meta.get('name')
+        
+        # If still no name, try to extract from resume sections
+        if not candidate_name:
+            sections = candidate_data.get('sections', [])
+            if isinstance(sections, list):
+                for section in sections:
+                    content = section.get('content', [])
+                    if content:
+                        # Look for lines that look like names (2-4 capitalized words)
+                        for line in content[:3]:  # Check first 3 lines of each section
+                            line = line.strip()
+                            if line and not line.startswith(('•', '-', '*', '1.', '2.', '3.')):
+                                words = line.split()
+                                if 2 <= len(words) <= 4 and all(word[0].isupper() for word in words if word and word[0].isalpha()):
+                                    # Additional validation: avoid common non-name patterns
+                                    if not any(pattern in line.lower() for pattern in [
+                                        'university', 'college', 'school', 'company', 'inc', 'llc', 'corp',
+                                        'software', 'engineer', 'developer', 'manager', 'director', 'analyst',
+                                        'resume', 'cv', 'curriculum vitae', 'phone', 'email', 'address'
+                                    ]):
+                                        candidate_name = line
+                                        break
+                    if candidate_name:
+                        break
+            elif isinstance(sections, dict):
+                # Handle dict-based sections structure
+                for section_name, section_content in sections.items():
+                    if isinstance(section_content, str) and section_content.strip():
+                        lines = section_content.split('\n')[:3]
+                        for line in lines:
+                            line = line.strip()
+                            if line and not line.startswith(('•', '-', '*', '1.', '2.', '3.')):
+                                words = line.split()
+                                if 2 <= len(words) <= 4 and all(word[0].isupper() for word in words if word and word[0].isalpha()):
+                                    if not any(pattern in line.lower() for pattern in [
+                                        'university', 'college', 'school', 'company', 'inc', 'llc', 'corp',
+                                        'software', 'engineer', 'developer', 'manager', 'director', 'analyst',
+                                        'resume', 'cv', 'curriculum vitae', 'phone', 'email', 'address'
+                                    ]):
+                                        candidate_name = line
+                                        break
+                        if candidate_name:
+                            break
+        
+        # Clean up the candidate name if found
+        if candidate_name:
+            candidate_name = candidate_name.strip()
+            # Remove any extra whitespace and clean up
+            candidate_name = ' '.join(candidate_name.split())
+            return candidate_name
+        
+        # Fallback to prettified filename
+        meta = candidate_data.get('meta', {})
+        source_file = meta.get('source_file', 'Unknown.pdf')
+        base_name = os.path.splitext(source_file)[0]
+        pretty_base = base_name.replace('_', ' ').replace('-', ' ').strip()
+        return pretty_base.title() if pretty_base else base_name
+        
+    except Exception as e:
+        logger.error(f"Error extracting candidate name: {e}")
+        # Final fallback
+        meta = candidate_data.get('meta', {})
+        source_file = meta.get('source_file', 'Unknown.pdf')
+        base_name = os.path.splitext(source_file)[0]
+        return base_name.replace('_', ' ').replace('-', ' ').strip().title()
+
 def get_candidate_display_name(candidate):
     """Get display name for candidate (parsed name, inferred from filename, or filename)."""
-    # Try to get parsed name from candidate data
+    # Helper to check if a name looks like a job title (should be rejected)
+    def is_job_title(name):
+        if not name:
+            return False
+        name_lower = name.lower()
+        job_title_keywords = [
+            'coordinator', 'practicum', 'supervisor', 'manager', 'director', 'analyst',
+            'engineer', 'developer', 'specialist', 'consultant', 'architect', 'scientist',
+            'lead', 'intern', 'founder', 'designer', 'technician', 'administrator',
+            'officer', 'programmer', 'strategist', 'editor', 'writer', 'producer',
+            'tester', 'trainer', 'teacher', 'mentor', 'assistant', 'associate',
+            'executive', 'president', 'vice', 'chief', 'head', 'senior', 'junior',
+            'principal', 'staff'
+        ]
+        words = name.split()
+        has_acronym = any(len(word) <= 4 and word.isupper() for word in words)
+        academic_patterns = ['bsit', 'bscs', 'bs ', 'ba ', 'ma ', 'ms ', 'phd', 'mba']
+        return (any(keyword in name_lower for keyword in job_title_keywords) or
+                has_acronym or
+                any(acad in name_lower for acad in academic_patterns))
+    
+    # Try to get parsed name from candidate data (prioritize parsed.candidate_name)
     parsed_data = candidate.get('parsed', {})
-    parsed_name = parsed_data.get('candidate_name') or parsed_data.get('parsed_name') or parsed_data.get('name') or candidate.get('parsed_name') or candidate.get('name')
-    if parsed_name and parsed_name.strip():
+    parsed_name = (parsed_data.get('candidate_name') or 
+                   parsed_data.get('parsed_name') or 
+                   parsed_data.get('name'))
+    
+    # Only use top-level candidate.name if parsed_name is not available
+    if not parsed_name:
+        parsed_name = candidate.get('parsed_name') or candidate.get('name')
+    
+    # Filter out job titles
+    if parsed_name and parsed_name.strip() and not is_job_title(parsed_name):
         return parsed_name.strip()
     
-    # Infer name from filename
+    # Infer name from filename (most reliable fallback)
     filename = candidate.get('meta', {}).get('source_file', '') or candidate.get('filename', '')
     if filename:
         # Remove extension and clean up
@@ -515,8 +942,14 @@ def landing_page(request):
             # Initialize batch processor with API key
             processor = BatchProcessor(api_key=api_key, disable_ocr=disable_ocr_flag)
             
+            # Clear caches before processing
+            try:
+                processor.clear_all_caches()
+            except Exception as e:
+                logger.warning(f"Error clearing caches: {e}")
+            
             # Process the batch
-            results = processor.process_batch(temp_paths, job_description, jd_criteria=jd_criteria)
+            results = processor.process_batch(temp_paths, job_description, jd_criteria=jd_criteria, clear_cache=False)
             
             # Store batch results in session for ranking view
             if 'batch_results' not in request.session:
@@ -853,45 +1286,90 @@ def ranking_view(request):
             pretty_base = pretty_base.title() if pretty_base else base_name
 
             candidate_name = None
+            
+            # Try multiple sources for candidate name
             if isinstance(parsed, dict):
-                candidate_name = parsed.get('name') or (
-                    isinstance(parsed.get('profile'), dict) and parsed.get('profile', {}).get('name')
+                # Check various possible locations for the name
+                candidate_name = (
+                    parsed.get('candidate_name') or 
+                    parsed.get('name') or 
+                    parsed.get('parsed_name') or
+                    (isinstance(parsed.get('profile'), dict) and parsed.get('profile', {}).get('name')) or
+                    (isinstance(parsed.get('summary'), dict) and parsed.get('summary', {}).get('candidate_name'))
                 )
-            candidate_name = candidate_name or meta.get('candidate_name')
+            
+            # Check meta data
+            candidate_name = candidate_name or meta.get('candidate_name') or meta.get('name')
             
             # If no name found in parsed data, try to extract from resume sections
             if not candidate_name:
                 sections = resume_data.get('sections', [])
-                for section in sections:
-                    content = section.get('content', [])
-                    if content:
-                        # Look for lines that look like names (2-4 capitalized words)
-                        for line in content[:3]:  # Check first 3 lines of each section
-                            line = line.strip()
-                            if line and not line.startswith(('•', '-', '*', '1.', '2.', '3.')):
-                                words = line.split()
-                                if 2 <= len(words) <= 4 and all(word[0].isupper() for word in words if word and word[0].isalpha()):
-                                    candidate_name = line
-                                    break
-                    if candidate_name:
-                        break
+                if isinstance(sections, list):
+                    for section in sections:
+                        content = section.get('content', [])
+                        if content:
+                            # Look for lines that look like names (2-4 capitalized words)
+                            for line in content[:3]:  # Check first 3 lines of each section
+                                line = line.strip()
+                                if line and not line.startswith(('•', '-', '*', '1.', '2.', '3.')):
+                                    words = line.split()
+                                    if 2 <= len(words) <= 4 and all(word[0].isupper() for word in words if word and word[0].isalpha()):
+                                        # Additional validation: avoid common non-name patterns
+                                        if not any(pattern in line.lower() for pattern in [
+                                            'university', 'college', 'school', 'company', 'inc', 'llc', 'corp',
+                                            'software', 'engineer', 'developer', 'manager', 'director', 'analyst',
+                                            'resume', 'cv', 'curriculum vitae', 'phone', 'email', 'address'
+                                        ]):
+                                            candidate_name = line
+                                            break
+                        if candidate_name:
+                            break
+                elif isinstance(sections, dict):
+                    # Handle dict-based sections structure
+                    for section_name, section_content in sections.items():
+                        if isinstance(section_content, str) and section_content.strip():
+                            lines = section_content.split('\n')[:3]
+                            for line in lines:
+                                line = line.strip()
+                                if line and not line.startswith(('•', '-', '*', '1.', '2.', '3.')):
+                                    words = line.split()
+                                    if 2 <= len(words) <= 4 and all(word[0].isupper() for word in words if word and word[0].isalpha()):
+                                        if not any(pattern in line.lower() for pattern in [
+                                            'university', 'college', 'school', 'company', 'inc', 'llc', 'corp',
+                                            'software', 'engineer', 'developer', 'manager', 'director', 'analyst',
+                                            'resume', 'cv', 'curriculum vitae', 'phone', 'email', 'address'
+                                        ]):
+                                            candidate_name = line
+                                            break
+                            if candidate_name:
+                                break
+            
+            # Clean up the candidate name if found
+            if candidate_name:
+                candidate_name = candidate_name.strip()
+                # Remove any extra whitespace and clean up
+                candidate_name = ' '.join(candidate_name.split())
             
             display_name = candidate_name if candidate_name else pretty_base
             
+            # Debug logging (can be removed later)
+            if not candidate_name:
+                logger.debug(f"No candidate name found for {source_file}, using filename: {pretty_base}")
+            else:
+                logger.debug(f"Found candidate name: {candidate_name} for {source_file}")
+            
             scores_obj = resume_data.get('scores', {})
-            default_score = (
-                scores_obj.get('final_pre_llm_display')
-                or scores_obj.get('semantic_score')
-                or scores_obj.get('tfidf_section_score')
-                or 0
-            )
+            # Use final_score for ranking (the actual computed score)
+            final_score = scores_obj.get('final_score', 0.0)
+            if final_score is None:
+                final_score = 0.0
 
             ranking_display = {
                 'resume_id': resume_id,
                 'display_name': display_name,
                 'candidate_name': display_name,  # Add candidate_name field
                 'has_ranking': resume_id in ranking_map,
-                'ranking_score': float(default_score) if default_score is not None else 0.0,
+                'ranking_score': float(final_score),  # Use final_score for proper ranking
                 'ranking_reason': None,
                 'rank': None,
                 'scores': resume_data.get('scores', {}),
@@ -899,21 +1377,30 @@ def ranking_view(request):
                 'parsed': resume_data.get('parsed', {}),
                 'meta': resume_data.get('meta', {})
             }
-            
+
             if ranking_info:
                 snap = ranking_info.get('scores_snapshot', {})
-                # Prefer final_pre_llm_display if present, else semantic, else keep default
-                ranking_display['ranking_score'] = snap.get('final_pre_llm_display') or snap.get('semantic') or ranking_display['ranking_score']
                 ranking_display['ranking_reason'] = ranking_info.get('reasoning', '')
                 ranking_display['rank'] = ranking_info.get('rank', 0)
-            
+                # Keep final_score as the primary ranking score
+
+            # Compute coverage percentage for UI
+            try:
+                cov_raw = float(ranking_display['scores'].get('coverage', 0.0))
+            except Exception:
+                cov_raw = 0.0
+            ranking_display['coverage_pct'] = round(cov_raw * 100.0, 1)
+
             ranked_resumes.append(ranking_display)
         
-        # Sort by rank if available, otherwise by score
+        # Sort by final_score (descending - higher scores first)
+        # If rank is available and valid, use it as primary sort, otherwise sort by score
         ranked_resumes.sort(
-            key=lambda x: (x['rank'] if x['rank'] is not None else 0, 
-                          x['ranking_score'] if x['ranking_score'] is not None else 0),
-            reverse=False  # Lower rank numbers first
+            key=lambda x: (
+                x['rank'] if x['rank'] is not None and x['rank'] > 0 else float('inf'),
+                -(x['ranking_score'] if x['ranking_score'] is not None else 0.0)
+            ),
+            reverse=False  # Lower rank numbers first, then higher scores first
         )
         
         context = {

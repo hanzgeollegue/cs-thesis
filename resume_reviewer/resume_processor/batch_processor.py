@@ -3,7 +3,7 @@ import logging
 import os
 import uuid
 from typing import List, Dict, Any, Optional, Tuple
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, is_dataclass
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -11,6 +11,8 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 import time
 from contextlib import contextmanager
+from datetime import datetime
+import calendar
 
 # Version compatibility check
 try:
@@ -39,6 +41,7 @@ try:
         get_llm_config,
         validate_config,
         USE_LLM_RANKER,
+        USE_ENHANCED_NLG,
         PARSE_CONCURRENCY,
         BATCH_TIMEOUT_SEC,
         ENABLE_MATCH_DETECTION,
@@ -48,17 +51,23 @@ try:
         META_MIN_LABELS,
     )
 except ImportError:
-    # Fallback to absolute imports (standalone context)
+    # Fallback to absolute imports (package or standalone context)
     try:
-        from enhanced_pdf_parser import PDFParser
-        from llm_ranker import LLMRanker, CEReranker
-        from text_processor import SemanticEmbedding
-        from text_processor import clear_tfidf_caches, scrub_pii_and_boilerplate, preprocess_text_for_dense_models, chunk_text_for_sbert
-        from config import (
+        from resume_processor.enhanced_pdf_parser import PDFParser
+        from resume_processor.llm_ranker import LLMRanker, CEReranker
+        from resume_processor.text_processor import SemanticEmbedding
+        from resume_processor.text_processor import (
+            clear_tfidf_caches,
+            scrub_pii_and_boilerplate,
+            preprocess_text_for_dense_models,
+            chunk_text_for_sbert,
+        )
+        from resume_processor.config import (
             get_openai_config,
             get_llm_config,
             validate_config,
             USE_LLM_RANKER,
+            USE_ENHANCED_NLG,
             PARSE_CONCURRENCY,
             BATCH_TIMEOUT_SEC,
             ENABLE_MATCH_DETECTION,
@@ -67,9 +76,34 @@ except ImportError:
             META_RIDGE_L2,
             META_MIN_LABELS,
         )
-    except ImportError as e:
-        logger.error(f"Failed to import required modules: {e}")
-        raise
+    except ImportError:
+        try:
+            from enhanced_pdf_parser import PDFParser
+            from llm_ranker import LLMRanker, CEReranker
+            from text_processor import SemanticEmbedding
+            from text_processor import (
+                clear_tfidf_caches,
+                scrub_pii_and_boilerplate,
+                preprocess_text_for_dense_models,
+                chunk_text_for_sbert,
+            )
+            from config import (
+                get_openai_config,
+            get_llm_config,
+            validate_config,
+            USE_LLM_RANKER,
+            USE_ENHANCED_NLG,
+            PARSE_CONCURRENCY,
+            BATCH_TIMEOUT_SEC,
+            ENABLE_MATCH_DETECTION,
+            REQUIRE_MATCH_FOR_CE,
+            ENABLE_META_COMBINER,
+                META_RIDGE_L2,
+                META_MIN_LABELS,
+            )
+        except ImportError as e:
+            logger.error(f"Failed to import required modules: {e}")
+            raise
 
 logger = logging.getLogger(__name__)
 
@@ -191,10 +225,25 @@ class BatchProcessor:
         
         # Canonical section mapping
         self.section_mapping = {
-            'experience': ['experience', 'work experience', 'employment', 'career history', 'work history', 'professional experience'],
-            'skills': ['skills', 'technical skills', 'core competencies', 'competencies', 'expertise', 'proficiencies'],
-            'education': ['education', 'academic background', 'qualifications', 'academic qualifications'],
-            'misc': ['summary', 'profile', 'objective', 'projects', 'certifications', 'awards', 'languages', 'interests', 'volunteer', 'leadership']
+            'experience': [
+                'experience', 'work experience', 'employment', 'career history', 'work history', 'professional experience',
+                'career experience', 'employment history', 'relevant experience', 'seminars training experiences',
+                'training experiences', 'training experience'
+            ],
+            'skills': [
+                'skills', 'technical skills', 'technology skills', 'core competencies', 'competencies', 'expertise',
+                'proficiencies', 'tools', 'technology stack', 'tech stack', 'toolset', 'technical proficiencies'
+            ],
+            'education': [
+                'education', 'academic background', 'qualifications', 'academic qualifications', 'education history',
+                'educational background', 'educational attainment', 'college', 'university', 'high school',
+                'secondary education', 'tertiary education', 'academic history', 'academic profile'
+            ],
+            'misc': [
+                'summary', 'professional summary', 'profile', 'objective', 'career objective', 'career objectives',
+                'projects', 'certifications', 'awards', 'languages', 'interests', 'volunteer', 'leadership',
+                'personal information', 'personal details', 'contact information', 'references'
+            ]
         }
         
         # Skill taxonomy (simplified - you can expand this)
@@ -259,12 +308,64 @@ class BatchProcessor:
                     # Create a dummy vectorizer that won't break the pipeline
                     self.tfidf_vectorizers[section] = None
     
-    def process_batch(self, resumes: List[str], job_description: str, jd_criteria: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Main batch processing pipeline."""
+    def clear_all_caches(self):
+        """Clear all caches: PDF parser cache, TF-IDF caches, and Cross-Encoder cache."""
+        try:
+            # Clear TF-IDF in-memory caches
+            clear_tfidf_caches()
+            logger.info("[CACHE] Cleared TF-IDF vectorizer caches")
+            
+            # Clear PDF parser cache files
+            if hasattr(self, 'pdf_parser') and self.pdf_parser:
+                cache_dir = getattr(self.pdf_parser, 'cache_dir', None)
+                if cache_dir and os.path.exists(cache_dir):
+                    cache_files = [f for f in os.listdir(cache_dir) if f.endswith('_structured.json')]
+                    for cache_file in cache_files:
+                        try:
+                            os.remove(os.path.join(cache_dir, cache_file))
+                        except Exception as e:
+                            logger.warning(f"[CACHE] Failed to remove {cache_file}: {e}")
+                    logger.info(f"[CACHE] Cleared {len(cache_files)} PDF parser cache files from {cache_dir}")
+            
+            # Clear Cross-Encoder cache if available
+            if hasattr(self, 'cross_encoder') and self.cross_encoder:
+                if hasattr(self.cross_encoder, 'cache'):
+                    try:
+                        import threading
+                        cache_lock = getattr(self.cross_encoder, 'cache_lock', None)
+                        if cache_lock:
+                            with cache_lock:
+                                cache_size = len(self.cross_encoder.cache)
+                                self.cross_encoder.cache.clear()
+                                logger.info(f"[CACHE] Cleared Cross-Encoder cache ({cache_size} entries)")
+                        else:
+                            cache_size = len(self.cross_encoder.cache)
+                            self.cross_encoder.cache.clear()
+                            logger.info(f"[CACHE] Cleared Cross-Encoder cache ({cache_size} entries)")
+                    except Exception as e:
+                        logger.warning(f"[CACHE] Error clearing Cross-Encoder cache: {e}")
+            
+            logger.info("[CACHE] All caches cleared successfully")
+        except Exception as e:
+            logger.warning(f"[CACHE] Error clearing caches: {e}")
+
+    def process_batch(self, resumes: List[str], job_description: str, jd_criteria: Optional[Dict[str, Any]] = None, clear_cache: bool = False) -> Dict[str, Any]:
+        """Main batch processing pipeline.
+        
+        Args:
+            resumes: List of file paths to PDF resumes
+            job_description: Job description text
+            jd_criteria: Optional pre-extracted JD criteria
+            clear_cache: If True, clear all caches before processing
+        """
         timing_bucket = {}
         batch_start_time = time.perf_counter()
         
         try:
+            # Clear caches if requested
+            if clear_cache:
+                self.clear_all_caches()
+            
             # Optional: clear TF-IDF caches when testing
             try:
                 from .config import DISABLE_TFIDF_CACHE
@@ -459,7 +560,7 @@ class BatchProcessor:
                     try:
                         parsed_resumes[i].scores.final_pre_llm = float(result.final_score)
                         parsed_resumes[i].scores.section_tfidf = float(result.section_tfidf)
-                        parsed_resumes[i].scores.skill_tfidf = float(result.skill_tfidf)
+                        parsed_resumes[i].scores.skill_tfidf = skill_tfidf_scores[i] if i < len(skill_tfidf_scores) else 0.0
                         parsed_resumes[i].scores.sbert_score = float(result.sbert_score)
                         parsed_resumes[i].scores.ce_score = float(result.ce_score)
                         # Store legacy aliases for backward compatibility
@@ -467,6 +568,34 @@ class BatchProcessor:
                         parsed_resumes[i].scores.tfidf_taxonomy_score = parsed_resumes[i].scores.skill_tfidf
                         parsed_resumes[i].scores.semantic_score = parsed_resumes[i].scores.sbert_score
                         parsed_resumes[i].scores.cross_encoder = parsed_resumes[i].scores.ce_score
+                        # Store CE debug invariants if available (from EnhancedCrossEncoder)
+                        if hasattr(result, 'ce_invariants') and result.ce_invariants:
+                            setattr(parsed_resumes[i].scores, 'ce_entered_builder', result.ce_invariants.get('entered_ce_builder', False))
+                            setattr(parsed_resumes[i].scores, 'ce_evidence_tokens', result.ce_invariants.get('evidence_tokens_available', 0))
+                            setattr(parsed_resumes[i].scores, 'ce_pairs_before', result.ce_invariants.get('num_pairs_before_filter', 0))
+                            setattr(parsed_resumes[i].scores, 'ce_pairs_after', result.ce_invariants.get('num_pairs_after_filter', 0))
+                            setattr(parsed_resumes[i].scores, 'ce_raw', result.ce_invariants.get('ce_raw_score', 0.0))
+                            setattr(parsed_resumes[i].scores, 'ce_blocked_reason', result.ce_invariants.get('ce_blocked_reason', ''))
+                            setattr(parsed_resumes[i].scores, 'ce_timed_out', result.ce_invariants.get('ce_timed_out', False))
+                        elif isinstance(result, dict) and 'ce_invariants' in result:
+                            # Handle dict results from enhanced_cross_encoder
+                            ce_inv = result.get('ce_invariants', {})
+                            setattr(parsed_resumes[i].scores, 'ce_entered_builder', ce_inv.get('entered_ce_builder', False))
+                            setattr(parsed_resumes[i].scores, 'ce_evidence_tokens', ce_inv.get('evidence_tokens_available', 0))
+                            setattr(parsed_resumes[i].scores, 'ce_pairs_before', ce_inv.get('num_pairs_before_filter', 0))
+                            setattr(parsed_resumes[i].scores, 'ce_pairs_after', ce_inv.get('num_pairs_after_filter', 0))
+                            setattr(parsed_resumes[i].scores, 'ce_raw', ce_inv.get('ce_raw_score', 0.0))
+                            setattr(parsed_resumes[i].scores, 'ce_blocked_reason', ce_inv.get('ce_blocked_reason', ''))
+                            setattr(parsed_resumes[i].scores, 'ce_timed_out', ce_inv.get('ce_timed_out', False))
+                        else:
+                            # Default values for CEReranker (doesn't track these)
+                            setattr(parsed_resumes[i].scores, 'ce_entered_builder', None)
+                            setattr(parsed_resumes[i].scores, 'ce_evidence_tokens', None)
+                            setattr(parsed_resumes[i].scores, 'ce_pairs_before', None)
+                            setattr(parsed_resumes[i].scores, 'ce_pairs_after', None)
+                            setattr(parsed_resumes[i].scores, 'ce_raw', None)
+                            setattr(parsed_resumes[i].scores, 'ce_blocked_reason', None)
+                            setattr(parsed_resumes[i].scores, 'ce_timed_out', None)
                     except Exception as e:
                         logger.warning(f"Error storing scores for resume {i}: {e}")
                         # Set fallback scores
@@ -524,13 +653,19 @@ class BatchProcessor:
                         r.scores.semantic_norm = 1.0
                     else:
                         if ABSOLUTE_NORMALIZATION:
-                            # Absolute scaling for SBERT
-                            if sb_raw >= 0.75:
+                            # Absolute scaling for SBERT - adjusted thresholds
+                            # 0.656 raw should normalize to ~0.65-0.70, not 0.37
+                            if sb_raw >= 0.80:
                                 r.scores.semantic_norm = 1.0
-                            elif sb_raw >= 0.60:
-                                r.scores.semantic_norm = (sb_raw - 0.60) / 0.15
+                            elif sb_raw >= 0.65:
+                                # Linear scaling from 0.65-0.80: maps 0.65→0.65, 0.80→1.0
+                                r.scores.semantic_norm = 0.65 + (sb_raw - 0.65) / 0.15 * 0.35
+                            elif sb_raw >= 0.50:
+                                # Linear scaling from 0.50-0.65: maps 0.50→0.50, 0.65→0.65
+                                r.scores.semantic_norm = 0.50 + (sb_raw - 0.50) / 0.15 * 0.15
                             else:
-                                r.scores.semantic_norm = max(0.0, sb_raw / 0.60)
+                                # For scores < 0.50, scale proportionally
+                                r.scores.semantic_norm = max(0.0, sb_raw / 0.50 * 0.50)
                         else:
                             if lo_s == hi_s:  # Degenerate case: min==max
                                 r.scores.semantic_norm = 0.5
@@ -560,7 +695,7 @@ class BatchProcessor:
                         r.scores.ce_norm = min(1.0, ce_raw * 1.05)  # 5% boost for validated matches
                     
                     logger.info(f"[NORM] {r.meta.get('source_file', 'unknown')}: "
-                               f"CE_raw={ce_raw:.3f} → CE_norm={r.scores.ce_norm:.3f} "
+                               f"CE_raw={ce_raw:.3f} -> CE_norm={r.scores.ce_norm:.3f} "
                                f"(no batch norm, coverage={r.scores.coverage:.2f})")
                 
                 # Optionally refit meta weights if enough labels exist
@@ -590,7 +725,17 @@ class BatchProcessor:
                 }
                 threshold = coverage_thresholds.get(seniority, 0.5)
                 
+                # Initialize taxonomy for coverage calculation (needed regardless of ENABLE_MATCH_DETECTION)
+                taxonomy = None
+                try:
+                    from .text_processor import SkillTaxonomy
+                    taxonomy = SkillTaxonomy()
+                except Exception as e:
+                    logger.warning(f"Failed to initialize SkillTaxonomy for coverage calculation: {e}")
+                    taxonomy = None
+                
                 for r in parsed_resumes:
+                    filename = r.meta.get('source_file', 'unknown')
                     x = [
                         1.0,
                         float(getattr(r.scores, 'tfidf_norm', 0.5)),
@@ -612,9 +757,69 @@ class BatchProcessor:
                         # Must-have skills coverage penalty
                         if must_have and taxonomy:
                             try:
-                                all_text = ' '.join([str(v) for v in r.sections.values()])
-                                matched_required = taxonomy.get_matched_required_skills(all_text, must_have)
-                                coverage = len(matched_required) / len(must_have) if must_have else 1.0
+                                # Search all sections: experience, skills, education, misc, and also parsed projects
+                                section_texts = [str(v) for v in r.sections.values()]
+                                # Also include parsed projects text if available
+                                if isinstance(r.parsed, dict):
+                                    projects = r.parsed.get('projects', [])
+                                    if projects:
+                                        for proj in projects:
+                                            if isinstance(proj, dict):
+                                                proj_text = ' '.join([
+                                                    str(proj.get('name', '')),
+                                                    str(proj.get('summary', '')),
+                                                    ' '.join(proj.get('technologies', []))
+                                                ])
+                                                if proj_text.strip():
+                                                    section_texts.append(proj_text)
+                                all_text = ' '.join(section_texts)
+                                
+                                # Try confidence-aware matching first, fallback to exact matching
+                                try:
+                                    # Use confidence-aware matching if fuzzy matching is enabled
+                                    if taxonomy.fuzzy_enabled:
+                                        matched_with_confidence = taxonomy.get_matched_required_skills_with_confidence(
+                                            all_text, must_have, min_confidence=0.7
+                                        )
+                                        if matched_with_confidence:
+                                            # Weight coverage by confidence scores
+                                            total_confidence = sum(conf for _, conf in matched_with_confidence)
+                                            coverage = total_confidence / len(must_have) if len(must_have) > 0 else 1.0
+                                            matched_required = [skill for skill, _ in matched_with_confidence]
+                                        else:
+                                            # No matches above threshold, use exact matching
+                                            matched_required = taxonomy.get_matched_required_skills(all_text, must_have)
+                                            coverage = len(matched_required) / len(must_have) if len(must_have) > 0 else 1.0
+                                    else:
+                                        # Fuzzy matching disabled, use exact matching
+                                        matched_required = taxonomy.get_matched_required_skills(all_text, must_have)
+                                        coverage = len(matched_required) / len(must_have) if len(must_have) > 0 else 1.0
+                                except Exception as conf_e:
+                                    # Fallback to exact matching if confidence matching fails
+                                    logger.warning(f"Confidence-aware matching failed, using exact matching: {conf_e}")
+                                    matched_required = taxonomy.get_matched_required_skills(all_text, must_have)
+                                    coverage = len(matched_required) / len(must_have) if len(must_have) > 0 else 1.0
+                                
+                                # Debug logging for skill matching
+                                if coverage == 0.0 and len(must_have) > 0:
+                                    logger.debug(f"[SKILL_COVERAGE] {filename}: coverage=0.0, "
+                                               f"must_have={len(must_have)} skills, "
+                                               f"matched={len(matched_required)}, "
+                                               f"text_length={len(all_text)}")
+                                    # Raw text fallback (pre-Nov fixes behavior)
+                                    raw_text = ''
+                                    if isinstance(r.parsed, dict):
+                                        raw_text = r.parsed.get('raw_text', '') or ''
+                                    if not raw_text:
+                                        raw_text = ' '.join(section_texts)
+                                    if raw_text.strip():
+                                        fallback_matches = taxonomy.get_matched_required_skills(raw_text, must_have)
+                                        if fallback_matches:
+                                            matched_required = fallback_matches
+                                            coverage = len(matched_required) / len(must_have) if len(must_have) > 0 else 1.0
+                                            logger.info(f"[SKILL_COVERAGE] Raw text fallback rescued coverage with {len(matched_required)} skills for {filename}")
+                                        else:
+                                            logger.debug(f"[SKILL_COVERAGE] Raw text fallback found no matches for {filename}")
                                 
                                 if coverage < threshold:
                                     # Apply gamma=2 penalty: final = base * (coverage^2)
@@ -623,21 +828,32 @@ class BatchProcessor:
                                 else:
                                     score = base_composite
                             except Exception as e:
-                                logger.warning(f"Error computing skill coverage: {e}")
+                                logger.warning(f"Error computing skill coverage for {filename}: {e}")
                                 score = base_composite
                         else:
                             score = base_composite
                         
-                        # Experience years gate (heuristic) - keep existing logic
+                        # Experience years gate (heuristic) - enhanced with structured parsing
+                        exp_text = r.sections.get('experience', '') or ''
+                        yrs_from_text = 0.0
+                        try:
+                            for m in re.findall(r"(\d+)\s+year", exp_text.lower()):
+                                yrs_from_text = max(yrs_from_text, float(m))
+                        except Exception:
+                            yrs_from_text = 0.0
+
+                        structured_entries = r.parsed.get('experience', []) if isinstance(r.parsed, dict) else []
+                        structured_years = self._estimate_years_from_structured_experience(structured_entries)
+                        yrs = max(yrs_from_text, structured_years)
+
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(
+                                f"[EXPERIENCE] {filename}: text_years={yrs_from_text:.2f}, "
+                                f"struct_years={structured_years:.2f}, used={yrs:.2f}"
+                            )
+
                         if min_years > 0:
                             try:
-                                exp_text = r.sections.get('experience', '') or ''
-                                yrs = 0
-                                for m in re.findall(r"(\d+)\s+year", exp_text.lower()):
-                                    try:
-                                        yrs = max(yrs, int(m))
-                                    except Exception:
-                                        pass
                                 if yrs < min_years:
                                     score = score * 0.5  # Soft penalty instead of zeroing
                                     if gate_reason:
@@ -656,13 +872,30 @@ class BatchProcessor:
                         # Recompute flags from final matched_required_skills list
                         r.scores.has_match_skills = bool(matched_required)
                         # For experience match, check if experience section has content
-                        exp_content = str(r.sections.get('experience', '')).strip()
-                        r.scores.has_match_experience = bool(exp_content)
+                        exp_content = str(exp_text).strip()
+                        has_structured_experience = bool(structured_entries)
+                        has_experience = (structured_years >= 0.25) or has_structured_experience or bool(exp_content)
+                        r.scores.has_match_experience = has_experience
+                        setattr(r.scores, 'estimated_experience_years', yrs)
                         
-                        # Perfect-fit floor: if full coverage and experience present, enforce floor
+                        # Perfect-fit floor: if high coverage and strong signals, enforce floor
                         try:
-                            if coverage == 1.0 and r.scores.has_match_experience and getattr(r.scores, 'tfidf_norm', 0.0) >= 0.6:
-                                score = max(score, 0.90)
+                            tfidf_n = getattr(r.scores, 'tfidf_norm', 0.0)
+                            ce_n = getattr(r.scores, 'ce_norm', 0.0)
+                            # Relaxed criteria: high coverage (>=0.85) OR perfect coverage (1.0)
+                            # AND (high CE score OR high TF-IDF OR experience match)
+                            has_high_coverage = coverage >= 0.85
+                            has_perfect_coverage = coverage == 1.0
+                            has_strong_signal = (ce_n >= 0.9) or (tfidf_n >= 0.5) or r.scores.has_match_experience
+                            
+                            if (has_perfect_coverage or has_high_coverage) and has_strong_signal:
+                                # Set floor based on coverage level
+                                if has_perfect_coverage:
+                                    score = max(score, 0.90)
+                                elif coverage >= 0.90:
+                                    score = max(score, 0.85)
+                                else:  # coverage >= 0.85
+                                    score = max(score, 0.80)
                         except Exception:
                             pass
                         # Clamp to [0,1]
@@ -676,8 +909,8 @@ class BatchProcessor:
                         r.scores.gate_reason = "error"
                         # Set flags based on final state
                         r.scores.has_match_skills = False
-                        exp_content = str(r.sections.get('experience', '')).strip()
-                        r.scores.has_match_experience = bool(exp_content)
+                        r.scores.has_match_experience = False
+                        setattr(r.scores, 'estimated_experience_years', 0.0)
                     
                     r.scores.final_score = score
                     r.scores.final_score_display = round(100.0 * score, 2)
@@ -685,11 +918,19 @@ class BatchProcessor:
                     r.scores.final_pre_llm = score
                     r.scores.final_pre_llm_display = r.scores.final_score_display
                     
-                    filename = r.meta.get('source_file', 'unknown')
-                    missing_skills = set(must_have) - set(matched_required) if must_have and matched_required else []
+                    # Calculate missing skills: normalize must_have to canonical forms for comparison
+                    if must_have and taxonomy:
+                        normalized_must_have = set([taxonomy.normalize_skill(skill) for skill in must_have])
+                        missing_skills = list(normalized_must_have - set(matched_required))
+                    elif must_have:
+                        # Fallback if taxonomy not available: use original comparison
+                        missing_skills = list(set(must_have) - set(matched_required))
+                    else:
+                        missing_skills = []
                     logger.info(f"[META] {filename} coverage={len(matched_required)}/{len(must_have) if must_have else 0} "
                                f"tf={r.scores.tfidf_norm:.3f} sb={r.scores.semantic_norm:.3f} ce={r.scores.ce_norm:.3f} "
                                f"ms={int(bool(r.scores.has_match_skills))} me={int(bool(r.scores.has_match_experience))} "
+                               f"yrs={getattr(r.scores, 'estimated_experience_years', 0.0):.2f} "
                                f"missing={list(missing_skills)[:3]}{'...' if len(missing_skills) > 3 else ''} -> final={score:.3f}")
                 
                 # Select top 50 for LLM processing (apply deterministic tie-breaking)
@@ -895,130 +1136,1135 @@ class BatchProcessor:
     def _parse_single_resume(self, resume_path: str) -> Optional[ParsedResume]:
         """Parse a single resume PDF."""
         try:
-            # Extract structured data using the correct method
             structured_data = self.pdf_parser._extract_structured_data(resume_path)
             
             if not structured_data.get('success', False):
                 logger.warning(f"Failed to parse {resume_path}: {structured_data.get('error', 'Unknown error')}")
-                return None
-            
-            # Normalize sections to canonical format
-            normalized_sections = self._normalize_sections(structured_data['sections'])
-            
-            # Create parsed resume object
-            resume_id = str(uuid.uuid4())
-            filename = os.path.basename(resume_path)
-            
-            parsed_resume = ParsedResume(
-                id=resume_id,
-                sections=normalized_sections,
-                meta={
-                    "source_file": filename,
-                    "pages": len(structured_data.get('layout_metadata', {}).get('text_elements', [])),
-                    "processing_status": "success"
-                },
-                scores=ResumeScores(0.0, 0.0, 0.0),
-                matched_skills=[],
-                parsed=self._extract_parsed_data(structured_data)
-            )
-            
+                fallback_structured = self._fallback_structured_parse(resume_path)
+                if not fallback_structured:
+                    return None
+                structured_data = fallback_structured
+
+            parsed_resume = self._build_parsed_resume(structured_data, resume_path)
+            if not parsed_resume:
+                logger.warning(f"No sections produced for {resume_path}; attempting fallback parser")
+                fallback_structured = self._fallback_structured_parse(resume_path)
+                if not fallback_structured:
+                    return None
+                parsed_resume = self._build_parsed_resume(fallback_structured, resume_path)
+                if not parsed_resume:
+                    return None
+
+            raw_text_len = len((parsed_resume.parsed.get('raw_text') or '').strip())
+            if raw_text_len == 0:
+                logger.warning(f"No text extracted from {resume_path}; attempting fallback parser")
+                fallback_structured = self._fallback_structured_parse(resume_path)
+                if fallback_structured:
+                    parsed_resume = self._build_parsed_resume(fallback_structured, resume_path)
+                    if parsed_resume:
+                        logger.info(f"Fallback parser succeeded for {resume_path}")
+
             return parsed_resume
             
         except Exception as e:
             logger.error(f"Error parsing {resume_path}: {str(e)}")
             return None
-    
-    def _normalize_sections(self, sections: List[Dict[str, Any]]) -> Dict[str, str]:
-        """Normalize section headers to canonical keys."""
-        normalized = {
-            'experience': '',
-            'skills': '',
-            'education': '',
-            'misc': ''
-        }
-        
-        for section in sections:
-            header = section['header'].lower()
-            content = ' '.join(section['content'])
-            
-            # Map to canonical section
-            mapped_section = None
-            for canonical, aliases in self.section_mapping.items():
-                if any(alias in header for alias in aliases):
-                    mapped_section = canonical
-                    break
-            
-            if mapped_section:
-                normalized[mapped_section] = content
+
+    def _build_parsed_resume(self, structured_data: Dict[str, Any], resume_path: str) -> Optional[ParsedResume]:
+        """Construct a ParsedResume object from structured parser output."""
+        if not structured_data or not structured_data.get('sections'):
+            return None
+
+        normalized_sections = self._normalize_sections(structured_data['sections'], structured_data)
+
+        resume_id = str(uuid.uuid4())
+        filename = os.path.basename(resume_path)
+
+        structured_meta = structured_data.get('meta') or {}
+        resume_meta = dict(structured_meta)
+        resume_meta.setdefault("source_file", filename)
+        resume_meta.setdefault("processing_status", structured_data.get('processing_status', 'completed'))
+
+        pages_processed = resume_meta.get("pages_processed")
+        pages_total = resume_meta.get("pages_total")
+        if "pages" not in resume_meta:
+            if pages_processed is not None:
+                resume_meta["pages"] = pages_processed
+            elif pages_total is not None:
+                resume_meta["pages"] = pages_total
             else:
-                # Add to misc if no clear mapping
-                if normalized['misc']:
-                    normalized['misc'] += ' ' + content
-                else:
-                    normalized['misc'] = content
-        
-        return normalized
+                resume_meta["pages"] = len(structured_data.get('layout_metadata', {}).get('text_elements', []))
+
+        canonical_lengths = {
+            key: len(normalized_sections.get(key, '').strip())
+            for key in ('experience', 'skills', 'education')
+        }
+        resume_meta['canonical_section_lengths'] = canonical_lengths
+        if all(length == 0 for length in canonical_lengths.values()):
+            resume_meta['parsing_ok'] = False
+            resume_meta['parse_reason'] = resume_meta.get('parse_reason') or 'no_canonical_sections'
+        else:
+            resume_meta.setdefault('parsing_ok', True)
+            resume_meta.setdefault('parse_reason', 'ok')
+
+        parsed_resume = ParsedResume(
+            id=resume_id,
+            sections=normalized_sections,
+            meta=resume_meta,
+            scores=ResumeScores(0.0, 0.0, 0.0),
+            matched_skills=[],
+            parsed=self._extract_parsed_data(structured_data, normalized_sections)
+        )
+        return parsed_resume
+
+    def _fallback_structured_parse(self, resume_path: str) -> Optional[Dict[str, Any]]:
+        """Fallback text extraction using PyMuPDF when primary parser yields no content."""
+        try:
+            import fitz  # PyMuPDF
+        except ImportError:
+            logger.error("Fallback parsing requires PyMuPDF (fitz); module not available.")
+            return None
+
+        try:
+            doc = fitz.open(resume_path)
+        except Exception as e:
+            logger.error(f"Fallback parser failed to open {resume_path}: {e}")
+            return None
+
+        content_lines: List[str] = []
+        page_count = 0
+        try:
+            page_count = doc.page_count
+            for page in doc:
+                text = page.get_text("text") or ""
+                if not text:
+                    continue
+                for line in text.splitlines():
+                    cleaned = line.strip()
+                    if cleaned:
+                        content_lines.append(cleaned)
+        finally:
+            doc.close()
+
+        if not content_lines:
+            logger.warning(f"Fallback parser found no text in {resume_path}")
+            return None
+
+        sections = [{
+            'header': 'Resume Content',
+            'content': content_lines
+        }]
+        raw_text_length = sum(len(line) for line in content_lines)
+        page_count = len(content_lines)  # approximate if actual count unavailable
+
+        meta = {
+            'parsing_ok': raw_text_length > 0,
+            'parse_reason': 'fallback_simple' if raw_text_length > 0 else 'no_content',
+            'pages_total': page_count,
+            'pages_processed': page_count,
+            'extracted_chars': raw_text_length,
+            'section_count': len(sections),
+            'source_file': os.path.basename(resume_path),
+            'processing_status': 'fallback'
+        }
+
+        return {
+            'success': True,
+            'sections': sections,
+            'summary': {},
+            'layout_metadata': {},
+            'error': None,
+            'processing_status': 'fallback',
+            'meta': meta
+        }
     
-    def _extract_parsed_data(self, structured_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_sections(self, sections: List[Dict[str, Any]], structured_data: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+        """Normalize section headers to canonical keys with aggregation."""
+        # Log input shape for debugging
+        logger.info(f"[NORMALIZE] _normalize_sections called with {len(sections) if isinstance(sections, list) else 'non-list'} sections")
+        if isinstance(sections, list) and sections:
+            top_headers = [s.get('header', '') for s in sections[:5]]
+            logger.info(f"[NORMALIZE] Top 5 section headers: {top_headers}")
+            total_content = sum(sum(len(str(item)) for item in s.get('content', [])) for s in sections)
+            logger.info(f"[NORMALIZE] Total content length: {total_content} chars")
+        elif not isinstance(sections, list):
+            logger.warning(f"[NORMALIZE] Received non-list input: {type(sections)}")
+        
+        buckets: Dict[str, List[str]] = {
+            'experience': [],
+            'skills': [],
+            'education': [],
+            'misc': []
+        }
+        taxonomy = None
+        taxonomy_error_logged = False
+
+        def _clean_join(items: List[str]) -> str:
+            cleaned = []
+            for item in items or []:
+                if not isinstance(item, str):
+                    item = str(item)
+                stripped = item.strip()
+                if stripped:
+                    cleaned.append(stripped)
+            return ' '.join(cleaned).strip()
+
+        for section in sections or []:
+            header_raw = section.get('header', '')
+            header = (header_raw or '').strip().lower()
+            content_text = _clean_join(section.get('content', []))
+            mapped = self._resolve_canonical_section(header, content_text)
+            if mapped not in buckets:
+                mapped = 'misc'
+            header_skill_text = ''
+            if mapped == 'skills':
+                if taxonomy is None and not taxonomy_error_logged:
+                    try:
+                        from .text_processor import SkillTaxonomy
+                        taxonomy = SkillTaxonomy()
+                    except Exception as taxonomy_error:
+                        taxonomy_error_logged = True
+                        logger.warning(f"[NORMALIZE] Failed to initialize SkillTaxonomy for header extraction: {taxonomy_error}")
+                if taxonomy:
+                    header_skills = taxonomy.extract_skills_from_text(header_raw or '')
+                    if header_skills:
+                        header_skill_text = ' '.join(sorted(set(header_skills)))
+            combined_text_parts = []
+            if header_skill_text:
+                combined_text_parts.append(header_skill_text)
+            if content_text:
+                combined_text_parts.append(content_text)
+            combined_text = ' '.join(combined_text_parts).strip()
+            if not combined_text:
+                continue
+            buckets[mapped].append(combined_text)
+
+        # Augment skills bucket with layout metadata lines that contain skills but were filtered out
+        if structured_data:
+            layout_texts = ((structured_data.get('layout_metadata') or {}).get('text_elements') or [])
+            if layout_texts:
+                if taxonomy is None and not taxonomy_error_logged:
+                    try:
+                        from .text_processor import SkillTaxonomy
+                        taxonomy = SkillTaxonomy()
+                    except Exception as taxonomy_error:
+                        taxonomy_error_logged = True
+                        logger.warning(f"[NORMALIZE] Failed to initialize SkillTaxonomy for layout extraction: {taxonomy_error}")
+                if taxonomy:
+                    existing_skill_tokens = set()
+                    if buckets['skills']:
+                        try:
+                            existing_skill_tokens = set(taxonomy.extract_skills_from_text(' '.join(buckets['skills'])))
+                        except Exception as e:
+                            logger.debug(f"[NORMALIZE] Failed to extract existing skill tokens: {e}")
+                    added_layout_lines = 0
+                    for elem in layout_texts:
+                        text = str(elem.get('text', '')).strip()
+                        if not text:
+                            continue
+                        # Ignore overly long lines that are likely paragraphs
+                        if len(text) > 250:
+                            continue
+                        try:
+                            skills_found = taxonomy.extract_skills_from_text(text)
+                        except Exception:
+                            skills_found = []
+                        if not skills_found:
+                            continue
+                        if set(skills_found).issubset(existing_skill_tokens):
+                            continue
+                        buckets['skills'].append(text)
+                        existing_skill_tokens.update(skills_found)
+                        added_layout_lines += 1
+                    if added_layout_lines:
+                        logger.info(f"[NORMALIZE] Added {added_layout_lines} layout-derived skill lines to skills bucket")
+
+        return {
+            key: ' '.join(values).strip()
+            for key, values in buckets.items()
+        }
+
+    def _resolve_canonical_section(self, header: str, content: str) -> str:
+        """Resolve a section header to a canonical bucket."""
+        header = (header or '').strip().lower()
+        header_words = set(re.findall(r'\b[a-z]+\b', header))
+
+        # Early heuristics for specific categories
+        if any(word in header_words for word in {'skill', 'skills', 'technology', 'technologies', 'tool', 'tools'}):
+            return 'skills'
+        if any(word in header_words for word in {'education', 'educational', 'academic', 'college', 'university', 'school', 'degree', 'bachelor', 'masters', 'phd'}):
+            return 'education'
+        if any(word in header_words for word in {'training', 'trainings', 'seminar', 'seminars', 'workshop', 'workshops'}):
+            return 'misc'
+        if any(word in header_words for word in {'objective', 'objectives', 'summary', 'profile'}):
+            return 'misc'
+        if any(word in header_words for word in {'personal', 'information', 'contact'}):
+            if 'contact' in header_words or 'personal' in header_words:
+                return 'misc'
+
+        def matches_alias(alias: str) -> bool:
+            alias = alias.lower()
+            alias_words = set(re.findall(r'\b[a-z]+\b', alias))
+            if alias_words and alias_words.issubset(header_words):
+                return True
+            pattern = r'\b' + re.escape(alias) + r'\b'
+            if re.search(pattern, header):
+                return True
+            if alias == 'experience' and ('experience' in header_words or 'experiences' in header_words):
+                return True
+            if alias.endswith('s') and alias[:-1] in header_words:
+                return True
+            if alias.endswith('ies') and alias[:-3] + 'y' in header_words:
+                return True
+            return False
+
+        for canonical, aliases in self.section_mapping.items():
+            if any(matches_alias(alias) for alias in aliases):
+                return canonical
+
+        # Additional heuristics
+        if header in {'resume content', 'general information'}:
+            # try to guess based on keywords when we only have a generic heading
+            if any(kw in content.lower() for kw in ['experience', 'responsibilities', 'work history']):
+                return 'experience'
+            if any(kw in content.lower() for kw in ['skill', 'technologies', 'tech stack', 'proficient']):
+                return 'skills'
+            if any(kw in content.lower() for kw in ['university', 'college', 'school', 'bachelor', 'degree', 'education']):
+                return 'education'
+        return 'misc'
+    
+    def _extract_parsed_data(
+        self,
+        structured_data: Dict[str, Any],
+        normalized_sections: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
         """Extract structured parsed data from resume."""
+        if normalized_sections is None:
+            normalized_sections = self._normalize_sections(structured_data.get('sections', []), structured_data)
+        else:
+            normalized_sections = {
+                'experience': (normalized_sections.get('experience') or '').strip(),
+                'skills': (normalized_sections.get('skills') or '').strip(),
+                'education': (normalized_sections.get('education') or '').strip(),
+                'misc': (normalized_sections.get('misc') or '').strip()
+            }
+        
+        normalized_sections.setdefault('misc', '')
+        metadata = (structured_data.get('meta') or {}).copy()
+        canonical_lengths = {
+            key: len(normalized_sections.get(key, '').strip())
+            for key in ('experience', 'skills', 'education')
+        }
+        metadata['canonical_section_lengths'] = canonical_lengths
+        if all(length == 0 for length in canonical_lengths.values()):
+            metadata['parsing_ok'] = False
+            metadata['parse_reason'] = metadata.get('parse_reason') or 'no_canonical_sections'
+        else:
+            metadata.setdefault('parsing_ok', True)
+            metadata.setdefault('parse_reason', 'ok')
+        
+        try:
+            raw_text = self.pdf_parser.extract_plain_text(structured_data)
+        except Exception as e:
+            logger.warning(f"Failed to generate raw text from structured data: {e}")
+            raw_text = ' '.join(normalized_sections.values()).strip()
+        
         parsed = {
             'experience': [],
             'skills': [],
             'education': [],
-            'misc': ''
+            'projects': [],
+            'certifications': [],
+            'languages': [],
+            'misc': normalized_sections.get('misc', ''),
+            'sections': normalized_sections,
+            'raw_text': raw_text,
+            'metadata': metadata
         }
-        
-        # Extract experience (simplified parsing)
-        experience_section = None
+        fallback_flags: List[str] = []
+
+        # --- Helper functions for structured extraction ---
+        month_regex = r'(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+        date_range_re = re.compile(
+            rf'({month_regex}\.?[\s/-]+\d{{2,4}}|\d{{1,2}}/\d{{2,4}}|\d{{4}})\s*(?:to|-|–|—)\s*(?:{month_regex}\.?[\s/-]+\d{{2,4}}|present|current|\d{{4}})',
+            re.IGNORECASE
+        )
+        single_year_re = re.compile(r'\b(19|20)\d{2}\b')
+        # Pattern to detect date-only lines like "March 10" or "March 14, 2025"
+        date_only_re = re.compile(
+            rf'^{month_regex}\s+\d{{1,2}}(?:\s*,\s*\d{{4}})?$',
+            re.IGNORECASE
+        )
+        contact_noise_re = re.compile(r'(@|https?://|www\.|linkedin\.|github\.|portfolio)', re.IGNORECASE)
+        job_keywords = [
+            'engineer', 'developer', 'manager', 'director', 'analyst', 'consultant', 'specialist',
+            'scientist', 'architect', 'lead', 'intern', 'founder', 'designer', 'technician', 'administrator',
+            'supervisor', 'coordinator', 'advisor', 'executive', 'programmer', 'program manager', 'product manager',
+            'product owner', 'project manager', 'qa', 'quality assurance', 'support engineer', 'data engineer',
+            'data scientist', 'business analyst', 'scrum master', 'devops', 'sre', 'software', 'hardware',
+            'security engineer', 'security analyst', 'solutions architect', 'systems engineer', 'network engineer'
+        ]
+        school_keywords = ['university', 'college', 'school', 'academy', 'institute', 'polytechnic', 'institute of', 'technology', 'polytechnic university']
+        degree_keywords = [
+            'bachelor', 'master', 'mba', 'bs', 'ba', 'ms', 'phd', 'associate', 'diploma',
+            'certificate', 'b.s.', 'b.a.', 'm.s.', 'm.a.', 'high school', 'secondary', 'tertiary',
+            'doctorate', 'bsc', 'msc', 'jd', 'md'
+        ]
+
+        non_role_keywords = {
+            'seminar', 'seminars', 'workshop', 'workshops', 'bootcamp', 'boot camp', 'course', 'courses',
+            'training', 'trainings', 'webinar', 'webinars', 'talk', 'talks', 'presentation', 'presentations',
+            'orientation', 'tour', 'tours', 'conference', 'conferences', 'symposium', 'summit', 'forum'
+        }
+        heading_noise = {'role', 'roles', 'responsibilities', 'summary', 'objective', 'projects', 'activities'}
+        company_markers = [
+            ' inc', ' llc', ' ltd', ' plc', ' gmbh', ' s.r.l', ' company', ' corporation', ' corp', ' co.',
+            ' technologies', ' technology', ' systems', ' solutions', ' studios', ' studio', ' labs',
+            ' partners', ' holdings', ' consulting', ' international', ' global', ' limited', ' enterprises'
+        ]
+
+        training_keywords = non_role_keywords
+
+        experience_promoted: List[str] = []
+        experience_dropped: List[str] = []
+        education_promoted: List[str] = []
+        education_rerouted: List[str] = []
+        rerouted_misc: List[str] = []
+
+        def _split_lines(text: str) -> List[str]:
+            if not text:
+                return []
+            parts = re.split(r'[\n\r•\u2022\u25CF]+', text)
+            return [part.strip() for part in parts if part and part.strip()]
+
+        def _split_tokens(text: str) -> List[str]:
+            if not text:
+                return []
+            parts = re.split(r'[,;/\n\r•\u2022\u25CF]+', text)
+            return [part.strip() for part in parts if part and part.strip()]
+
+        def _collect_section_lines(keywords: List[str]) -> List[str]:
+            lines: List[str] = []
+            for section in structured_data.get('sections', []):
+                header = (section.get('header') or '').lower()
+                if any(keyword in header for keyword in keywords):
+                    for line in section.get('content', []) or []:
+                        cleaned = (line or '').strip()
+                        if cleaned:
+                            lines.append(cleaned)
+            return lines
+
+        def _is_training_like_line(text: str) -> bool:
+            lower = text.lower()
+            return any(keyword in lower for keyword in training_keywords)
+
+        def _looks_like_role_header(line: str) -> bool:
+            text = line.strip()
+            if not text or contact_noise_re.search(text):
+                return False
+            text = re.sub(r'^[\s•\u2022\u25CF\-\*]+', '', text)
+            lower = text.lower()
+            if _is_training_like_line(lower):
+                return False
+            
+            # Fix 1: Reject date-only lines (e.g., "March 10", "March 14, 2025")
+            if date_only_re.match(text):
+                return False
+            
+            keyword_hit = any(word in lower for word in job_keywords)
+            has_sep = any(sep in lower for sep in [' - ', ' – ', ' — ', ' | ', ' at ', ' @ ', ', '])
+            date_hit = bool(date_range_re.search(text) or single_year_re.search(text))
+            company_marker = any(marker in lower for marker in company_markers)
+            
+            # Fix 1: Require job keyword OR company marker when only dates present
+            # Dates alone should not be sufficient
+            if date_hit and has_sep:
+                # Only allow if we have job keyword or company marker
+                if not keyword_hit and not company_marker:
+                    return False
+            
+            if keyword_hit and (has_sep or date_hit or company_marker):
+                return True
+            # Fix 2: Add title length check - reject very long titles without structure
+            if keyword_hit and len(text.split()) >= 2:
+                # For longer titles (> 40 chars), require separators/dates/company markers
+                if len(text) > 40:
+                    if not (has_sep or date_hit or company_marker):
+                        return False
+                return True
+            capitalized_tokens = sum(1 for token in text.split() if token[:1].isupper())
+            if keyword_hit and capitalized_tokens >= 2:
+                return True
+            return False
+
+        def _split_title_company(text: str) -> Tuple[str, str]:
+            working = text.strip().strip('-|•')
+            lowered = working.lower()
+            separators = [' at ', ' @ ', ' - ', ' – ', ' — ', ' | ', ', ']
+            for sep in separators:
+                idx = lowered.find(sep)
+                if idx != -1:
+                    title = working[:idx].strip(' ,-|')
+                    company = working[idx + len(sep):].strip(' ,-|')
+                    return title, company
+            return working, ''
+
+        def _line_looks_like_company(text: str) -> bool:
+            if not text:
+                return False
+            lower = text.lower()
+            if _is_training_like_line(lower):
+                return False
+            if any(marker in lower for marker in company_markers):
+                return True
+            tokens = text.split()
+            if len(tokens) <= 6 and sum(1 for token in tokens if token[:1].isupper()) >= 2:
+                return True
+            return False
+
+        def _extract_dates_from_block(block_lines: List[str]) -> str:
+            block_text = ' '.join(block_lines)
+            match = date_range_re.search(block_text)
+            if match:
+                return match.group(0).strip()
+            years = single_year_re.findall(block_text)
+            if years:
+                unique_years = []
+                for y in years:
+                    year_val = ''.join(y)
+                    if year_val not in unique_years:
+                        unique_years.append(year_val)
+                if len(unique_years) >= 2:
+                    return f"{unique_years[0]} - {unique_years[1]}"
+                return unique_years[0]
+            return ''
+
+        def _build_experience_entries(lines: List[str]) -> List[Dict[str, Any]]:
+            entries: List[Dict[str, Any]] = []
+            current_block: List[str] = []
+            for line in lines:
+                cleaned = line.strip()
+                if not cleaned:
+                    continue
+                if _looks_like_role_header(cleaned):
+                    if current_block:
+                        entries.extend(_finalize_experience_block(current_block))
+                        current_block = []
+                    current_block.append(cleaned)
+                else:
+                    if not current_block and _is_training_like_line(cleaned.lower()):
+                        rerouted_misc.append(cleaned)
+                        experience_dropped.append(cleaned[:80])
+                        continue
+                    if current_block:
+                        current_block.append(cleaned)
+            if current_block:
+                entries.extend(_finalize_experience_block(current_block))
+            return entries
+
+        def _finalize_experience_block(block_lines: List[str]) -> List[Dict[str, Any]]:
+            header = block_lines[0]
+            if contact_noise_re.search(header):
+                return []
+            dates = _extract_dates_from_block(block_lines)
+            header_without_dates = header.replace(dates, '').strip(' -–—|,') if dates else header
+            title, company = _split_title_company(header_without_dates)
+            title = title.strip()
+            company = company.strip()
+            title_lower = title.lower()
+            if not title or contact_noise_re.search(title):
+                if block_lines:
+                    rerouted_misc.append(' '.join(block_lines))
+                    experience_dropped.append(header[:80])
+                return []
+            if _is_training_like_line(title_lower):
+                rerouted_misc.append(' '.join(block_lines))
+                experience_dropped.append(header[:80])
+                return []
+            if title_lower.split()[0] in heading_noise:
+                rerouted_misc.append(' '.join(block_lines))
+                experience_dropped.append(header[:80])
+                return []
+            
+            # Fix 2: Add title length and structure validation
+            # Maximum title length check (80 chars)
+            if len(title) > 80:
+                rerouted_misc.append(' '.join(block_lines))
+                experience_dropped.append(header[:80])
+                return []
+            
+            # Detect sentence-style bullets: starts with verb, ends with period, > 50 chars
+            description_verbs = ['integrated', 'developed', 'designed', 'implemented', 'created', 'built', 'managed', 'led', 'worked', 'utilized', 'redesigned', 'rebuilt']
+            if len(title) > 50 and title.endswith('.') and any(title_lower.startswith(verb + ' ') for verb in description_verbs):
+                rerouted_misc.append(' '.join(block_lines))
+                experience_dropped.append(header[:80])
+                return []
+            
+            # Negative patterns: reject lines that look like descriptions
+            description_patterns = ['with test applications', 'to conduct', 'for future use', 'within the', 'for future']
+            if any(pattern in title_lower for pattern in description_patterns):
+                rerouted_misc.append(' '.join(block_lines))
+                experience_dropped.append(header[:80])
+                return []
+            
+            if not company:
+                for ln in block_lines[1:3]:
+                    candidate = ln.strip(' -•\u2022\u25CF')
+                    if _line_looks_like_company(candidate):
+                        company = candidate
+                        break
+            normalized_title = title_lower
+            has_job_keyword = any(keyword in normalized_title for keyword in job_keywords)
+            company_lower = company.lower()
+            has_company_marker = any(marker in company_lower for marker in company_markers) if company else False
+            
+            # For titles > 40 chars, require separators/dates/company markers
+            if len(title) > 40:
+                has_sep = any(sep in header.lower() for sep in [' - ', ' – ', ' — ', ' | ', ' at ', ' @ ', ', '])
+                if not (has_sep or dates or has_company_marker or has_job_keyword):
+                    rerouted_misc.append(' '.join(block_lines))
+                    experience_dropped.append(header[:80])
+                    return []
+            
+            if not has_job_keyword and not dates and not has_company_marker:
+                rerouted_misc.append(' '.join(block_lines))
+                experience_dropped.append(header[:80])
+                return []
+            if len(title.split()) < 2 and not has_job_keyword:
+                rerouted_misc.append(' '.join(block_lines))
+                experience_dropped.append(header[:80])
+                return []
+            
+            # Fix: Merge multi-line bullets intelligently
+            bullet_chars = ('•', '●', '▪', '‣', '◦', '∙', '-', '*')
+            bullet_pattern = re.compile(rf"^[{re.escape(''.join(bullet_chars))}]+\s*")
+            description_verbs = ['integrated', 'developed', 'designed', 'implemented', 'created', 'built', 'managed', 'led', 'worked', 'utilized', 'redesigned', 'rebuilt', 'wrote', 'collaborated', 'monitored', 'set', 'participated']
+            
+            raw_bullet_lines = [
+                ln for ln in block_lines[1:]
+                if not contact_noise_re.search(ln) and not _is_training_like_line(ln.lower())
+            ]
+            
+            merged_bullets = []
+            current_bullet = None
+            
+            for line in raw_bullet_lines:
+                line_stripped = line.strip()
+                if not line_stripped:
+                    if current_bullet:
+                        merged_bullets.append(current_bullet)
+                        current_bullet = None
+                    continue
+                
+                # Check if line starts with bullet marker
+                bullet_match = bullet_pattern.match(line_stripped)
+                has_bullet_marker = bullet_match is not None
+                
+                # Extract text without bullet marker
+                if has_bullet_marker:
+                    text_without_bullet = line_stripped[bullet_match.end():].strip()
+                else:
+                    text_without_bullet = line_stripped
+                
+                if not text_without_bullet:
+                    continue
+                
+                # Determine if this is a new bullet or continuation
+                is_new_bullet = False
+                if has_bullet_marker:
+                    is_new_bullet = True
+                elif current_bullet is None:
+                    # First line without bullet marker - could be a bullet
+                    is_new_bullet = True
+                else:
+                    # Check if line looks like a new bullet (starts with verb, capitalizes first letter)
+                    text_lower = text_without_bullet.lower()
+                    starts_with_verb = any(text_lower.startswith(verb + ' ') for verb in description_verbs)
+                    starts_with_capital = text_without_bullet and text_without_bullet[0].isupper()
+                    ends_with_punctuation = text_without_bullet.endswith(('.', '!', '?'))
+                    prev_ends_with_punctuation = current_bullet.endswith(('.', '!', '?'))
+                    
+                    # If previous bullet doesn't end with punctuation, likely continuation
+                    if not prev_ends_with_punctuation:
+                        # Merge unless this line is very long and clearly a new bullet
+                        is_new_bullet = starts_with_verb and len(text_without_bullet) > 40
+                    # If previous bullet ended with punctuation, check if this is a new bullet
+                    else:
+                        # If line is very short (< 20 chars), likely continuation (rare but possible)
+                        if len(text_without_bullet) < 20:
+                            is_new_bullet = False
+                        # If starts with verb and is reasonably long, likely new bullet
+                        elif starts_with_verb and len(text_without_bullet) > 20:
+                            is_new_bullet = True
+                        # If capitalized and reasonably long, likely new bullet
+                        elif starts_with_capital and len(text_without_bullet) > 30:
+                            is_new_bullet = True
+                        # Otherwise, continuation
+                        else:
+                            is_new_bullet = False
+                
+                if is_new_bullet:
+                    # Save previous bullet if exists
+                    if current_bullet:
+                        merged_bullets.append(current_bullet)
+                    current_bullet = text_without_bullet
+                else:
+                    # Merge with current bullet
+                    if current_bullet:
+                        current_bullet = current_bullet + ' ' + text_without_bullet
+                    else:
+                        current_bullet = text_without_bullet
+            
+            # Add final bullet if exists
+            if current_bullet:
+                merged_bullets.append(current_bullet)
+            
+            bullets = merged_bullets
+            
+            experience_promoted.append(header[:80])
+            return [{
+                'title': title.strip(),
+                'company': company.strip(),
+                'dates': dates,
+                'description': ' '.join(block_lines).strip(),
+                'bullets': bullets
+            }]
+
+        def _looks_like_school_line(line: str) -> bool:
+            lower = line.lower()
+            return any(keyword in lower for keyword in school_keywords)
+
+        def _looks_like_degree_line(line: str) -> bool:
+            lower = line.lower()
+            return any(keyword in lower for keyword in degree_keywords)
+
+        def _build_education_entries(lines: List[str]) -> List[Dict[str, Any]]:
+            entries: List[Dict[str, Any]] = []
+            current_block: List[str] = []
+            for line in lines:
+                cleaned = line.strip()
+                if not cleaned:
+                    continue
+                lower = cleaned.lower()
+                if _is_training_like_line(lower):
+                    education_rerouted.append(cleaned[:80])
+                    rerouted_misc.append(cleaned)
+                    if current_block:
+                        entries.append(_finalize_education_block(current_block))
+                        current_block = []
+                    continue
+                if _looks_like_school_line(cleaned) or _looks_like_degree_line(cleaned):
+                    if current_block:
+                        entries.append(_finalize_education_block(current_block))
+                        current_block = []
+                    current_block.append(cleaned)
+                else:
+                    if current_block:
+                        current_block.append(cleaned)
+            if current_block:
+                entries.append(_finalize_education_block(current_block))
+            return [entry for entry in entries if entry]
+
+        def _finalize_education_block(block_lines: List[str]) -> Optional[Dict[str, Any]]:
+            if not block_lines:
+                return None
+            school = ''
+            degree = ''
+            year = ''
+            for line in block_lines:
+                if not school and _looks_like_school_line(line):
+                    school = line.strip()
+                if not degree and _looks_like_degree_line(line):
+                    degree = line.strip()
+                if not year:
+                    dates = _extract_dates_from_block([line])
+                    if dates:
+                        year = dates
+            if not school:
+                for line in block_lines:
+                    candidate = line.strip()
+                    if candidate == degree:
+                        continue
+                    if _line_looks_like_company(candidate):
+                        school = candidate
+                        break
+            if not degree:
+                degree_candidates = [ln for ln in block_lines if _looks_like_degree_line(ln)]
+                if degree_candidates:
+                    degree = degree_candidates[0].strip()
+            
+            # Fix 3: Validate education field quality
+            # Maximum length checks: degree <= 100 chars, school <= 150 chars
+            if degree and len(degree) > 100:
+                degree = ''
+            if school and len(school) > 150:
+                school = ''
+            
+            # Filter address patterns (street names, city/state patterns)
+            address_patterns = [
+                r'\b(street|st|avenue|ave|road|rd|boulevard|blvd|drive|dr|lane|ln|way|circle|cir)\b',
+                r'\b\d+\s+(street|st|avenue|ave|road|rd|boulevard|blvd|drive|dr)\b',
+                r'\b(city|state|province|region|country)\b',
+                r'\b\d{4,5}\b',  # ZIP codes
+                r'\b(ph|tel|phone|contact|address):',  # Contact info markers
+            ]
+            if degree:
+                for pattern in address_patterns:
+                    if re.search(pattern, degree, re.IGNORECASE):
+                        degree = ''
+                        break
+            if school:
+                for pattern in address_patterns:
+                    if re.search(pattern, school, re.IGNORECASE):
+                        school = ''
+                        break
+            
+            # Filter objective text patterns
+            objective_patterns = [
+                r'\b(seeking|looking to|aims to|willing to|eager to|want to|hope to)\b',
+                r'\b(entry-level|entry level|position|role|job|opportunity)\b',
+                r'\b(where i can|where i will|while contributing|while learning)\b',
+                r'\b(student|applicant|candidate)\b',
+            ]
+            # Filter organization activity patterns (NEW)
+            organization_activity_patterns = [
+                r'\b(provide|organize|assist|mentor|tutor|volunteer|coordinate)\b',
+                r'\b(mentorship|tutoring|social events|activities|outreach|programming)\b',
+                r'\b(freshman|underrepresented|majors|transition)\b',
+                r'\b(1st year|2nd year|stimulate|creativity|fundamental concepts)\b',
+            ]
+            if degree:
+                for pattern in objective_patterns:
+                    if re.search(pattern, degree, re.IGNORECASE):
+                        degree = ''
+                        break
+                # Check organization patterns
+                if degree:
+                    for pattern in organization_activity_patterns:
+                        if re.search(pattern, degree, re.IGNORECASE):
+                            degree = ''
+                            break
+            if school:
+                for pattern in objective_patterns:
+                    if re.search(pattern, school, re.IGNORECASE):
+                        school = ''
+                        break
+                # Check organization patterns
+                if school:
+                    for pattern in organization_activity_patterns:
+                        if re.search(pattern, school, re.IGNORECASE):
+                            school = ''
+                            break
+            
+            # Require at least one clean field (degree OR school) after filtering
+            if not degree and not school:
+                rerouted_misc.append(' '.join(block_lines))
+                education_rerouted.append(block_lines[0][:80])
+                return None
+            
+            # Additional validation: if both fields exist but are very short or suspicious, reject
+            if degree and school:
+                if len(degree) < 5 and len(school) < 5:
+                    rerouted_misc.append(' '.join(block_lines))
+                    education_rerouted.append(block_lines[0][:80])
+                    return None
+            
+            education_promoted.append(block_lines[0][:80])
+            return {
+                'degree': degree,
+                'school': school,
+                'year': year,
+                'description': ' '.join(block_lines).strip()
+            }
+
+        def _parse_skill_items(lines: List[str]) -> List[Dict[str, Any]]:
+            tokens: List[str] = []
+            for line in lines:
+                tokens.extend(_split_tokens(line))
+            deduped = []
+            seen = set()
+            for token in tokens:
+                lower = token.lower()
+                if lower and lower not in seen:
+                    deduped.append({'skill': token})
+                    seen.add(lower)
+            return deduped
+
+        def _collect_lines_for_keywords(keywords: List[str]) -> List[str]:
+            return _collect_section_lines(keywords)
+
+        # --- Experience extraction ---
+        experience_lines = _collect_lines_for_keywords(['experience', 'work', 'employment'])
+        parsed['experience'] = _build_experience_entries(experience_lines)
+
+        # --- Skills extraction ---
+        skill_lines = _collect_lines_for_keywords(['skills', 'competencies', 'technologies'])
+        parsed['skills'] = _parse_skill_items(skill_lines)
+
+        # --- Education extraction ---
+        education_lines = _collect_lines_for_keywords(['education', 'academic', 'school', 'college', 'university'])
+        parsed['education'] = _build_education_entries(education_lines)
+
+        # Extract projects (block-based parsing)
+        project_section = None
         for section in structured_data.get('sections', []):
-            if any(word in section['header'].lower() for word in ['experience', 'work', 'employment']):
-                experience_section = section
+            if any(word in section['header'].lower() for word in ['project']):
+                project_section = section
                 break
-        
-        if experience_section:
-            # Simple experience parsing (you can enhance this)
-            for content in experience_section['content']:
-                if content.strip():
-                    parsed['experience'].append({
-                        'role': 'Software Engineer',  # Placeholder - enhance parsing
-                        'company': 'Company Name',   # Placeholder - enhance parsing
-                        'dates': '2020-2023',       # Placeholder - enhance parsing
-                        'bullets': [content.strip()]
-                    })
-        
-        # Extract skills
-        skills_section = None
-        for section in structured_data.get('sections', []):
-            if any(word in section['header'].lower() for word in ['skills', 'competencies']):
-                skills_section = section
-                break
-        
-        if skills_section:
-            for content in skills_section['content']:
-                if content.strip():
-                    parsed['skills'].append(content.strip())
-        
-        # Extract education
-        education_section = None
-        for section in structured_data.get('sections', []):
-            if any(word in section['header'].lower() for word in ['education', 'academic']):
-                education_section = section
-                break
-        
-        if education_section:
-            for content in education_section['content']:
-                if content.strip():
-                    parsed['education'].append({
-                        'degree': 'Bachelor\'s',  # Placeholder - enhance parsing
-                        'institution': 'University',  # Placeholder - enhance parsing
-                        'year': '2020'  # Placeholder - enhance parsing
-                    })
+        if project_section:
+            project_items = []
+            seen_titles = set()
+            
+            # Helper function to detect if a line looks like a project name/header
+            def _looks_like_project_header(line: str) -> bool:
+                cleaned = line.strip()
+                if not cleaned or len(cleaned) < 5:
+                    return False
+                cleaned_lower = cleaned.lower()
+                # Skip generic headers
+                if cleaned_lower in ['project', 'projects', 'project:', 'projects:']:
+                    return False
+                
+                # Exclude lines that start with action verbs (these are descriptions, not headers)
+                action_verbs = ['developed', 'designed', 'created', 'built', 'implemented', 'formulated', 
+                               'wrote', 'presented', 'integrated', 'collaborated', 'managed', 'led',
+                               'worked', 'utilized', 'redesigned', 'rebuilt', 'monitored', 'set',
+                               'provide', 'organized', 'conducted', 'established', 'maintained']
+                first_word = cleaned_lower.split()[0] if cleaned_lower.split() else ''
+                if first_word in action_verbs:
+                    return False
+                
+                # Check for date patterns (common in project headers)
+                has_date = bool(date_range_re.search(cleaned) or single_year_re.search(cleaned))
+                # Check for project-like keywords
+                project_keywords = ['project', 'course', 'class', 'design', 'development', 'system', 
+                                   'application', 'app', 'tool', 'platform', 'programming', 'personal']
+                has_keyword = any(keyword in cleaned_lower for keyword in project_keywords)
+                # Check if it looks like a title (capitalized words, reasonable length)
+                words = cleaned.split()
+                capitalized_count = sum(1 for w in words if w and w[0].isupper())
+                is_title_like = capitalized_count >= 3 and len(words) >= 3  # Made more strict: need 3+ capitalized words
+                
+                # Must have at least 2 of these 3 criteria to be considered a header
+                criteria_met = sum([has_date, has_keyword, is_title_like])
+                return criteria_met >= 2 and len(cleaned) >= 15  # Increased minimum length
+            
+            # Helper function to detect if a line is date-only
+            def _is_date_only_line(line: str) -> bool:
+                cleaned = line.strip()
+                # Check for single date patterns (month day, year)
+                if date_only_re.match(cleaned):
+                    return True
+                # Check for date range patterns - if match covers entire line, it's date-only
+                date_match = date_range_re.search(cleaned)
+                if date_match and date_match.group(0).strip() == cleaned:
+                    return True
+                # Check for simple year ranges like "2021 - 2022" or "April 2021 - June 2021"
+                if re.match(r'^(?:\d{4}|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4})\s*(?:-|to|–|—)\s*(?:\d{4}|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4}|present|current)$', cleaned, re.IGNORECASE):
+                    return True
+                # Check for month-year patterns like "September 2019 – Present"
+                if re.match(r'^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4}\s*(?:–|-|—)\s*(?:present|current)$', cleaned, re.IGNORECASE):
+                    return True
+                return False
+            
+            # Group lines into project blocks
+            current_project = None
+            project_lines = project_section.get('content', [])
+            
+            # Helper to check if line starts with action verb (likely a bullet)
+            def _starts_with_action_verb(line: str) -> bool:
+                action_verbs = ['developed', 'designed', 'created', 'built', 'implemented', 'formulated', 
+                               'wrote', 'presented', 'integrated', 'collaborated', 'managed', 'led',
+                               'worked', 'utilized', 'redesigned', 'rebuilt', 'monitored', 'set',
+                               'provide', 'organized', 'conducted', 'established', 'maintained',
+                               'analyzed', 'configured', 'deployed', 'optimized', 'enhanced']
+                first_word = line.lower().split()[0] if line.lower().split() else ''
+                return first_word in action_verbs
+            
+            for i, line in enumerate(project_lines):
+                cleaned = line.strip()
+                if not cleaned:
+                    # Empty line - finalize current project if exists
+                    if current_project and current_project.get('name'):
+                        project_items.append(current_project)
+                        current_project = None
+                    continue
+                
+                cleaned_lower = cleaned.lower()
+                # Skip generic headers
+                if cleaned_lower in ['project', 'projects', 'project:', 'projects:']:
+                    continue
+                
+                # Check if this is a date-only line
+                if _is_date_only_line(cleaned):
+                    # Attach to previous project if exists, otherwise skip
+                    if current_project:
+                        # Add date to project name or summary
+                        if not current_project.get('summary'):
+                            current_project['summary'] = cleaned
+                        else:
+                            current_project['summary'] = current_project['summary'] + ' ' + cleaned
+                    continue
+                
+                # Check if this looks like a new project header
+                if _looks_like_project_header(cleaned):
+                    # Finalize previous project
+                    if current_project and current_project.get('name'):
+                        project_items.append(current_project)
+                    
+                    # Start new project
+                    # Keep the full line as name (including dates) but limit length
+                    full_name = cleaned[:150].strip()
+                    # Extract dates from the name line for potential use
+                    date_match = date_range_re.search(full_name)
+                    dates_text = ''
+                    if date_match:
+                        dates_text = date_match.group(0).strip()
+                        # Keep dates in name, but we can also store them separately if needed
+                        name = full_name  # Keep full name with dates
+                    else:
+                        name = full_name
+                    
+                    # Check for duplicates (use name without dates for deduplication)
+                    name_for_dedup = name
+                    if date_match:
+                        name_for_dedup = name[:date_match.start()].strip(' ,-–—')
+                    name_lower = name_for_dedup.lower()
+                    if name_lower not in seen_titles and len(name_for_dedup) >= 5:
+                        seen_titles.add(name_lower)
+                        current_project = {
+                            'name': name,
+                            'summary': '',
+                            'bullets': [],  # NEW: store bullets separately
+                            'technologies': []
+                        }
+                    else:
+                        current_project = None
+                else:
+                    # This is likely a description line or bullet
+                    if current_project:
+                        # If line starts with action verb, treat as bullet
+                        if _starts_with_action_verb(cleaned):
+                            current_project['bullets'].append(cleaned)
+                        else:
+                            # Add to summary
+                            if current_project['summary']:
+                                current_project['summary'] = current_project['summary'] + ' ' + cleaned
+                            else:
+                                current_project['summary'] = cleaned
+                    else:
+                        # No current project - only create if it looks like a substantial title
+                        # Don't create projects from action verb lines
+                        if not _starts_with_action_verb(cleaned) and len(cleaned) >= 15:
+                            name_lower = cleaned[:100].lower().strip()
+                            if name_lower not in seen_titles:
+                                seen_titles.add(name_lower)
+                                current_project = {
+                                    'name': cleaned[:100].strip(),
+                                    'summary': '',
+                                    'bullets': [],
+                                    'technologies': []
+                                }
+            
+            # Finalize last project if exists
+            if current_project and current_project.get('name'):
+                project_items.append(current_project)
+            
+            # Clean up project summaries and bullets (limit length, remove excessive whitespace)
+            for project in project_items:
+                if project.get('summary'):
+                    summary = ' '.join(project['summary'].split())
+                    project['summary'] = summary[:500]  # Limit summary length
+                # Clean up bullets
+                if project.get('bullets'):
+                    project['bullets'] = [' '.join(bullet.split()) for bullet in project['bullets']]
+            
+            parsed['projects'] = project_items
         
         # Extract candidate name from summary
         summary = structured_data.get('summary', {})
         candidate_name = summary.get('candidate_name', '')
+        
+        # Filter out job titles and invalid names
+        if candidate_name:
+            candidate_name_lower = candidate_name.lower()
+            # Reject common job title patterns
+            job_title_keywords = [
+                'coordinator', 'practicum', 'supervisor', 'manager', 'director', 'analyst',
+                'engineer', 'developer', 'specialist', 'consultant', 'architect', 'scientist',
+                'lead', 'intern', 'founder', 'designer', 'technician', 'administrator',
+                'officer', 'programmer', 'strategist', 'editor', 'writer', 'producer',
+                'tester', 'trainer', 'teacher', 'mentor', 'assistant', 'associate',
+                'executive', 'president', 'vice', 'chief', 'head', 'senior', 'junior',
+                'principal', 'staff'
+            ]
+            # Check for acronyms (BSIT, IT, CS, etc.)
+            words = candidate_name.split()
+            has_acronym = any(len(word) <= 4 and word.isupper() for word in words)
+            # Check for academic patterns
+            academic_patterns = ['bsit', 'bscs', 'bs ', 'ba ', 'ma ', 'ms ', 'phd', 'mba']
+            
+            if (any(keyword in candidate_name_lower for keyword in job_title_keywords) or
+                has_acronym or
+                any(acad in candidate_name_lower for acad in academic_patterns)):
+                candidate_name = ''  # Reject invalid name
+        
+        # Set candidate name if valid, otherwise fall back to filename
         if candidate_name:
             parsed['candidate_name'] = candidate_name
+        else:
+            # Fall back to filename-based name extraction
+            source_file = metadata.get('source_file', '')
+            if source_file:
+                # Extract name from filename (remove extension, clean up)
+                base_name = os.path.splitext(source_file)[0]
+                # Remove common prefixes/suffixes and clean
+                base_name = base_name.replace('_', ' ').replace('-', ' ').strip()
+                # Title case
+                parsed['candidate_name'] = ' '.join(word.capitalize() for word in base_name.split())
+            else:
+                parsed['candidate_name'] = 'Unknown Candidate'
+
+        # Fallback population using normalized sections when primary extraction is empty
+        normalized_experience = normalized_sections.get('experience', '')
+        if not parsed['experience'] and normalized_experience:
+            exp_lines = _split_lines(normalized_experience)
+            fallback_entries = _build_experience_entries(exp_lines)
+            if fallback_entries:
+                parsed['experience'] = fallback_entries
+                fallback_flags.append('experience')
+
+        normalized_skills = normalized_sections.get('skills', '')
+        if not parsed['skills'] and normalized_skills:
+            skill_items = _parse_skill_items([normalized_skills])
+            if skill_items:
+                parsed['skills'] = skill_items
+                fallback_flags.append('skills')
+
+        normalized_education = normalized_sections.get('education', '')
+        if not parsed['education'] and normalized_education:
+            edu_lines = _split_lines(normalized_education)
+            fallback_edu = _build_education_entries(edu_lines)
+            if fallback_edu:
+                parsed['education'] = fallback_edu
+                fallback_flags.append('education')
+
+        if fallback_flags:
+            metadata['section_fallback'] = fallback_flags
+        if rerouted_misc:
+            existing_misc = parsed.get('misc', '')
+            combined_misc = ' '.join([existing_misc] + rerouted_misc).strip()
+            parsed['misc'] = combined_misc or existing_misc
+
+        if logger.isEnabledFor(logging.DEBUG):
+            if experience_promoted:
+                logger.debug("Experience headers accepted: %s", experience_promoted[:5])
+            if experience_dropped:
+                logger.debug("Experience headers dropped: %s", experience_dropped[:5])
+            if education_promoted:
+                logger.debug("Education blocks accepted: %s", education_promoted[:5])
+            if education_rerouted:
+                logger.debug("Education items rerouted to misc: %s", education_rerouted[:5])
         
         return parsed
     
@@ -1057,7 +2303,13 @@ class BatchProcessor:
                 logger.warning("SectionAwareTFIDF returned None, using fallback scores")
                 return [0.0] * len(resumes), [0.0] * len(resumes)
             
-            section_scores, skill_scores = result
+            # Handle both tuple and single list return values
+            if isinstance(result, tuple):
+                section_scores, skill_scores = result
+            else:
+                # Single list returned - use as section scores, skill scores are 0
+                section_scores = result if isinstance(result, list) else [0.0] * len(resumes)
+                skill_scores = [0.0] * len(resumes)
             
             # Ensure we have the right number of scores
             if len(section_scores) != len(resumes):
@@ -1130,7 +2382,7 @@ class BatchProcessor:
             
             if not self.ce_reranker or not self.ce_reranker.model_available:
                 logger.warning("Cross-Encoder not available, using fallback scoring")
-                return self._create_fallback_ce_results(resumes, section_tfidf_scores, skill_tfidf_scores, sbert_scores)
+                return self._create_fallback_ce_results(resumes, section_tfidf_scores, sbert_scores, skill_tfidf_scores)
             
             # Convert resumes to dict format
             resume_dicts = []
@@ -1157,7 +2409,7 @@ class BatchProcessor:
             # Pass jd_sections if available, otherwise use job_description
             jd_input = jd_sections if jd_sections is not None else job_description
             result = self.ce_reranker.rerank_candidates(jd_input, resume_dicts, 
-                                                      section_tfidf_scores, skill_tfidf_scores, sbert_scores)
+                                                      section_tfidf_scores, sbert_scores)
             # Optional short-circuit: force CE score to 0.0 when not allowed
             if ce_allowed_mask is not None and result:
                 try:
@@ -1173,13 +2425,13 @@ class BatchProcessor:
             # Defensive check for None result
             if result is None:
                 logger.warning("Cross-Encoder reranker returned None, using fallback scoring")
-                return self._create_fallback_ce_results(resumes, section_tfidf_scores, skill_tfidf_scores, sbert_scores)
+                return self._create_fallback_ce_results(resumes, section_tfidf_scores, sbert_scores, skill_tfidf_scores)
             
             return result
             
         except Exception as e:
             logger.error(f"Error in _apply_cross_encoder_reranking: {e}")
-            return self._create_fallback_ce_results(resumes, section_tfidf_scores, skill_tfidf_scores, sbert_scores)
+            return self._create_fallback_ce_results(resumes, section_tfidf_scores, sbert_scores, skill_tfidf_scores)
 
     # --- Utility helpers ---
     def _basic_tokens(self, text: str) -> List[str]:
@@ -1229,6 +2481,83 @@ class BatchProcessor:
             logger.info(f"[META] Updated weights: {np.round(self._meta_w, 3).tolist()}")
         except Exception as e:
             logger.warning(f"Meta weight refit failed: {e}")
+
+    def _parse_date_token(self, token: str) -> Optional[datetime]:
+        """Parse tokens like 'June 2022' or '2022' into a datetime object (month precision)."""
+        try:
+            token_clean = (token or "").strip()
+            if not token_clean:
+                return None
+            token_lower = token_clean.lower()
+            if 'present' in token_lower or 'current' in token_lower:
+                return datetime.now()
+
+            year_match = re.search(r'\b(?:19|20)\d{2}\b', token_lower)
+            if not year_match:
+                return None
+            year = int(year_match.group(0))
+
+            month = 1
+            for idx in range(1, 13):
+                name = calendar.month_name[idx].lower()
+                abbr = calendar.month_abbr[idx].lower()
+                if name and name in token_lower:
+                    month = idx
+                    break
+                if abbr and abbr in token_lower:
+                    month = idx
+                    break
+
+            return datetime(year, month, 1)
+        except Exception:
+            return None
+
+    def _estimate_years_from_structured_experience(self, experience_entries: List[Dict[str, Any]]) -> float:
+        """
+        Estimate total experience duration (in years) from structured experience entries.
+        Falls back to heuristic values when dates are missing or incomplete.
+        """
+        if not experience_entries:
+            return 0.0
+
+        current_dt = datetime.now()
+        total_months = 0
+
+        for entry in experience_entries:
+            dates = (entry.get('dates') or '').strip()
+            months = None
+
+            if dates:
+                parts = re.split(r'\s*(?:to|–|—|-)\s*', dates, maxsplit=1)
+                if len(parts) == 2:
+                    start_token, end_token = parts[0], parts[1]
+                else:
+                    start_token, end_token = dates, ''
+
+                start_dt = self._parse_date_token(start_token)
+                end_dt = self._parse_date_token(end_token)
+
+                if start_dt and not end_dt:
+                    end_dt = current_dt
+                if start_dt and end_dt:
+                    if end_dt < start_dt:
+                        end_dt = start_dt
+                    months = (end_dt.year - start_dt.year) * 12 + (end_dt.month - start_dt.month) + 1
+                elif end_dt and not start_dt:
+                    start_dt = end_dt
+                    months = 1
+
+            if months is None:
+                # Heuristic fallback: treat entries without reliable dates as half a year
+                months = 6
+
+            total_months += max(0, months)
+
+        if total_months == 0:
+            total_months = 6 * len(experience_entries)
+
+        years = total_months / 12.0
+        return round(years, 2)
 
     def _generate_meta_rankings(self, resumes: List[ParsedResume]) -> List[Dict[str, Any]]:
         try:
@@ -1299,7 +2628,7 @@ class BatchProcessor:
             return []
     
     def _create_fallback_ce_results(self, resumes: List[ParsedResume], section_tfidf_scores: List[float], 
-                                  skill_tfidf_scores: List[float], sbert_scores: List[float]) -> List:
+                                  sbert_scores: List[float], skill_tfidf_scores: Optional[List[float]] = None) -> List:
         """Create fallback results when Cross-Encoder is not available."""
         try:
             from .llm_ranker import CERerankerResult
@@ -1313,19 +2642,20 @@ class BatchProcessor:
                 try:
                     # Ensure we have valid scores for this index
                     section_score = section_tfidf_scores[i] if i < len(section_tfidf_scores) else 0.0
-                    skill_score = skill_tfidf_scores[i] if i < len(skill_tfidf_scores) else 0.0
                     sbert_score = sbert_scores[i] if i < len(sbert_scores) else 0.0
                     
                     # Simple weighted combination
-                    final_score = (0.25 * section_score + 
-                                  0.2 * skill_score + 
-                                  0.15 * sbert_score)
+                    skill_score = 0.0
+                    if skill_tfidf_scores is not None:
+                        skill_score = skill_tfidf_scores[i] if i < len(skill_tfidf_scores) else 0.0
+                    final_score = (0.4 * section_score +
+                                   0.25 * skill_score +
+                                   0.35 * sbert_score)
                     
                     results.append(CERerankerResult(
                         candidate_id=getattr(resume, 'id', f'fallback_{i}'),
                         ce_score=0.0,
                         section_tfidf=section_score,
-                        skill_tfidf=skill_score,
                         sbert_score=sbert_score,
                         final_score=final_score
                     ))
@@ -1336,7 +2666,6 @@ class BatchProcessor:
                         candidate_id=getattr(resume, 'id', f'fallback_{i}'),
                         ce_score=0.0,
                         section_tfidf=0.0,
-                        skill_tfidf=0.0,
                         sbert_score=0.0,
                         final_score=0.0
                     ))
@@ -1351,7 +2680,6 @@ class BatchProcessor:
                 candidate_id=f'fallback_{i}',
                 ce_score=0.0,
                 section_tfidf=0.0,
-                skill_tfidf=0.0,
                 sbert_score=0.0,
                 final_score=0.0
             ) for i in range(len(resumes))]
@@ -2183,16 +3511,115 @@ class BatchProcessor:
     
     def _assemble_output(self, resumes: List[ParsedResume], final_ranking: List[Dict[str, Any]], job_description: str, jd_criteria: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Assemble the final output JSON."""
+        def _json_safe(value: Any) -> Any:
+            if is_dataclass(value):
+                return _json_safe(asdict(value))
+            if isinstance(value, dict):
+                return {k: _json_safe(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [_json_safe(v) for v in value]
+            if hasattr(value, "to_dict"):
+                try:
+                    return _json_safe(value.to_dict())
+                except Exception:
+                    pass
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                return value
+            return str(value)
+
+        analysis_results: Dict[str, Dict[str, Any]] = {}
+        if USE_ENHANCED_NLG and resumes:
+            try:
+                from .nlg_generator_enhanced import generate_candidate_analysis_enhanced
+                statistics_module = None
+                try:
+                    import numpy as np  # type: ignore
+                except Exception:
+                    np = None
+                    import statistics as _statistics
+                    statistics_module = _statistics
+
+                final_scores = [
+                    float(getattr(resume.scores, 'final_score', 0.0) or 0.0)
+                    for resume in resumes
+                ]
+                if final_scores:
+                    if np is not None:
+                        median_score = float(np.median(final_scores))  # type: ignore[arg-type]
+                    else:
+                        median_score = float(statistics_module.median(final_scores))  # type: ignore[union-attr]
+                else:
+                    median_score = 0.0
+
+                batch_stats = {
+                    'batch_id': str(uuid.uuid4()),
+                    'candidate_count': len(resumes),
+                    'all_final_scores': final_scores,
+                    'median_score': median_score * 100
+                }
+
+                jd_payload = jd_criteria or {}
+                for resume in resumes:
+                    try:
+                        candidate_payload = {
+                            'id': resume.id,
+                            'scores': asdict(resume.scores),
+                            'parsed': resume.parsed,
+                            'meta': resume.meta,
+                            'matched_skills': resume.matched_skills,
+                            'sections': resume.sections,
+                            'parsing_ok': resume.parsed.get('metadata', {}).get('parsing_ok', True)
+                        }
+                        analysis = generate_candidate_analysis_enhanced(
+                            candidate_payload,
+                            jd_payload,
+                            batch_stats
+                        )
+                        if analysis:
+                            analysis_results[resume.id] = _json_safe(analysis)
+                    except Exception as inner_e:
+                        logger.warning(f"Enhanced NLG generation failed for {resume.id}: {inner_e}")
+            except Exception as e:
+                logger.warning(f"Enhanced NLG generation unavailable: {e}")
+                analysis_results = {}
+
+        # Sort resumes by final_score (descending) before creating output
+        # This ensures the output order matches the ranking
+        try:
+            sorted_resumes = sorted(resumes, key=lambda r: float(getattr(r.scores, 'final_score', 0.0) or 0.0), reverse=True)
+        except Exception as e:
+            logger.warning(f"Error sorting resumes by final_score: {e}, using original order")
+            sorted_resumes = resumes
+        
         # Convert resumes to required format
         resumes_output = []
-        for resume in resumes:
+        for resume in sorted_resumes:
+            scores_dict = asdict(resume.scores)
+            analysis = analysis_results.get(resume.id) if analysis_results else None
+            if analysis:
+                scores_dict['analysis_text'] = analysis.get('text', '')
+                scores_dict['analysis_bullets'] = analysis.get('bullets', [])
+                scores_dict['analysis_facts'] = analysis.get('facts', {})
+                scores_dict['analysis_metadata'] = analysis.get('metadata', {})
+
+            analysis_block = None
+            if analysis:
+                analysis_block = {
+                    'text': analysis.get('text', ''),
+                    'bullets': analysis.get('bullets', []),
+                    'facts': analysis.get('facts', {}),
+                    'metadata': analysis.get('metadata', {})
+                }
+
             resume_output = {
                 'id': resume.id,
-                'scores': asdict(resume.scores),
+                'scores': scores_dict,
                 'matched_skills': resume.matched_skills,
                 'parsed': resume.parsed,
                 'meta': resume.meta
             }
+            if analysis_block is not None:
+                resume_output['analysis'] = analysis_block
             resumes_output.append(resume_output)
         
         # Generate batch summary

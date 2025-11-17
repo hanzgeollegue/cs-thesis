@@ -12,6 +12,17 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+def _fix_json_serialization(obj):
+    """Recursively convert boolean values to integers for JSON serialization."""
+    if isinstance(obj, bool):
+        return int(obj)
+    elif isinstance(obj, dict):
+        return {key: _fix_json_serialization(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [_fix_json_serialization(item) for item in obj]
+    else:
+        return obj
+
 # Global dictionary to track running tasks
 _TASKS = {}
 _TASKS_LOCK = threading.Lock()
@@ -44,14 +55,37 @@ class TaskStatus:
             self.processed_resumes = processed
         self.updated_at = datetime.now()
     
+    def _fix_json_serialization(self, obj):
+        """Recursively convert boolean values to integers for JSON serialization."""
+        if isinstance(obj, bool):
+            return int(obj)
+        elif isinstance(obj, dict):
+            return {key: self._fix_json_serialization(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._fix_json_serialization(item) for item in obj]
+        else:
+            return obj
+    
     def to_dict(self):
         """Convert to dictionary for JSON response."""
+        # Convert result to JSON-serializable format
+        json_result = None
+        if self.result:
+            try:
+                # Convert any non-serializable objects to strings
+                import json
+                json.dumps(self.result)  # Test if it's serializable
+                json_result = self.result
+            except (TypeError, ValueError) as e:
+                # If not serializable, convert to string representation
+                json_result = str(self.result)
+        
         return {
             'task_id': self.task_id,
             'status': self.status,
             'progress': self.progress,
             'message': self.message,
-            'result': self.result,
+            'result': json_result,
             'error': self.error,
             'total_resumes': self.total_resumes,
             'processed_resumes': self.processed_resumes,
@@ -126,13 +160,21 @@ def process_batch_async(task_id: str, resume_paths, job_description, jd_criteria
         update_task(task_id, progress=15, message='Loading AI models...')
         processor = BatchProcessor(api_key=api_key, disable_ocr=disable_ocr)
         
+        # Clear caches before processing
+        update_task(task_id, progress=18, message='Clearing caches...')
+        try:
+            processor.clear_all_caches()
+        except Exception as e:
+            logger.warning(f"Error clearing caches: {e}")
+        
         # Process batch with progress callbacks
         update_task(task_id, progress=20, message=f'Processing {len(resume_paths)} resumes...')
         
         result = processor.process_batch(
             resumes=resume_paths,
             job_description=job_description,
-            jd_criteria=jd_criteria
+            jd_criteria=jd_criteria,
+            clear_cache=False  # Already cleared above
         )
         
         # Check for errors
@@ -143,7 +185,21 @@ def process_batch_async(task_id: str, resume_paths, job_description, jd_criteria
                 progress=100,
                 message='Processing complete!'
             )
-            task.result = result
+            # Ensure result is JSON-serializable before storing
+            try:
+                import json
+                json.dumps(result)  # Test if it's serializable
+                task.result = result
+            except (TypeError, ValueError) as e:
+                logger.error(f"Result not JSON serializable: {e}")
+                # Convert to a proper error response instead of string
+                task.result = {
+                    'error': 'Result not JSON serializable',
+                    'error_details': str(e),
+                    'resumes': [],
+                    'final_ranking': [],
+                    'batch_summary': {'error': True}
+                }
             logger.info(f"Task {task_id} completed successfully")
         else:
             error_msg = result.get('error', 'Unknown error') if result else 'Processing failed'

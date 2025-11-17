@@ -106,12 +106,25 @@ def time_phase(name: str, bucket: Optional[Dict[str, float]] = None):
 USE_PYMUPDF = True  # Try PyMuPDF (fitz) first if available
 # Import configuration from config module
 try:
-    from .config import MAX_PAGES, MAX_OCR_PAGES, OCR_ALLOWED, RESUME_TIMEOUT_SEC
+    from .config import MAX_PAGES, MAX_OCR_PAGES, OCR_ALLOWED, RESUME_TIMEOUT_SEC, PARSER_BACKEND
 except ImportError:
     MAX_PAGES = 3
     MAX_OCR_PAGES = 2
     OCR_ALLOWED = True
     RESUME_TIMEOUT_SEC = 120
+    PARSER_BACKEND = "pymupdf4llm"
+
+# Try to import pymupdf4llm if configured
+try:
+    if PARSER_BACKEND == "pymupdf4llm":
+        import pymupdf4llm
+        PYMUPDF4LLM_AVAILABLE = True
+    else:
+        PYMUPDF4LLM_AVAILABLE = False
+except ImportError:
+    PYMUPDF4LLM_AVAILABLE = False
+    if PARSER_BACKEND == "pymupdf4llm":
+        logger.warning("pymupdf4llm not available, falling back to fitz/pdfplumber")
 
 # --- Precompiled regexes & inline synonyms ---
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
@@ -120,15 +133,104 @@ PHONE_RE = re.compile(r"\b\d{3}[-\.]?\d{3}[-\.]?\d{4}\b")
 FOOTER_RE = re.compile(r"^(Page\s+)?\d+(\s+of\s+\d+)?$", re.IGNORECASE)
 TRAILING_PERIOD_RE = re.compile(r"\.[\s]*$")
 LEADING_BULLET_COLON_RE = re.compile(r"^[\u2022\u25CF\-\*\s]*([^:\n]+?)(:?)[\s]*$")
+HEADER_CANDIDATE_THRESHOLD = 0.44  # Minimum header score to treat a line as a real section break
+
+CANONICAL_SECTION_PRIORITY = [
+    'experience', 'skills', 'education', 'projects', 'certifications',
+    'languages', 'awards', 'volunteer', 'summary', 'contact', 'misc'
+]
+
+CONTENT_HINTS: Dict[str, List[str]] = {
+    'experience': [
+        'experience', 'work history', 'employment', 'professional experience',
+        'responsible for', 'managed', 'developed', 'engineer', 'company',
+        'intern', 'team lead', 'product', 'project manager', 'delivered'
+    ],
+    'skills': [
+        'skills', 'technical', 'technologies', 'tech stack', 'frameworks',
+        'tools', 'proficient', 'expertise', 'competencies', 'languages',
+        'platforms', 'libraries'
+    ],
+    'education': [
+        'education', 'university', 'college', 'school', 'academy', 'bachelor',
+        'master', 'phd', 'gpa', 'degree', 'curriculum', 'diploma'
+    ],
+    'projects': [
+        'project', 'projects', 'built', 'designed', 'implemented', 'prototype',
+        'hackathon', 'case study'
+    ],
+    'certifications': [
+        'certification', 'certifications', 'certified', 'license', 'credential'
+    ],
+    'languages': [
+        'language', 'languages', 'fluent', 'bilingual', 'native', 'speak'
+    ],
+    'awards': [
+        'award', 'awards', 'honor', 'recognition', 'achievement', 'distinction'
+    ],
+    'volunteer': [
+        'volunteer', 'community', 'service', 'nonprofit', 'ngo', 'outreach'
+    ],
+    'summary': [
+        'summary', 'objective', 'profile', 'statement', 'overview'
+    ],
+    'contact': [
+        'contact', 'information', 'phone', 'email', 'address', 'linkedin'
+    ]
+}
 
 # Small inline synonym set (canonical -> synonyms)
 SECTION_SYNONYMS: Dict[str, List[str]] = {
-    'experience': ['experience', 'work experience', 'employment', 'career history', 'work history', 'professional experience', 'roles'],
-    'skills': ['skills', 'technical skills', 'core competencies', 'competencies', 'expertise', 'proficiencies'],
-    'education': ['education', 'academic background', 'qualifications', 'academic qualifications'],
-    'projects': ['projects', 'project experience', 'project work', 'key projects'],
-    'certifications': ['certifications', 'licenses', 'professional certifications'],
-    'awards': ['awards', 'honors', 'achievements']
+    'experience': [
+        'experience', 'work experience', 'employment', 'career history', 'work history',
+        'professional experience', 'roles', 'professional background', 'employment history'
+    ],
+    'skills': [
+        'skills', 'technical skills', 'core competencies', 'competencies', 'expertise',
+        'proficiencies', 'technical proficiencies', 'toolset', 'technology skills'
+    ],
+    'education': [
+        'education', 'academic background', 'qualifications', 'academic qualifications',
+        'educational background', 'educational attainment', 'college', 'university',
+        'secondary education', 'high school', 'tertiary education', 'academic history'
+    ],
+    'projects': [
+        'projects', 'project experience', 'project work', 'key projects', 'notable projects',
+        'portfolio projects'
+    ],
+    'certifications': [
+        'certifications', 'licenses', 'professional certifications', 'accreditations'
+    ],
+    'awards': [
+        'awards', 'honors', 'achievements', 'recognition', 'accomplishments', 'distinctions'
+    ],
+    'summary': [
+        'summary', 'professional summary', 'career summary', 'profile', 'professional profile',
+        'personal statement', 'objective', 'career objective', 'career objectives'
+    ],
+    'contact': [
+        'contact', 'contact information', 'contact info', 'personal information',
+        'personal details', 'address', 'phone', 'email'
+    ],
+    'training': [
+        'training', 'professional development', 'courses', 'workshops', 'seminars',
+        'seminars and training experiences', 'training experiences'
+    ],
+    'references': [
+        'references', 'professional references', 'character references', 'referees'
+    ],
+    'languages': [
+        'languages', 'language skills', 'linguistic skills', 'foreign languages'
+    ],
+    'interests': [
+        'interests', 'hobbies', 'personal interests', 'activities', 'extracurricular'
+    ],
+    'volunteer': [
+        'volunteer', 'volunteer work', 'volunteer experience', 'community service'
+    ],
+    'leadership': [
+        'leadership', 'leadership roles', 'leadership experience', 'leadership positions'
+    ]
 }
 ALL_SYNONYMS: List[str] = sorted({syn for syns in SECTION_SYNONYMS.values() for syn in syns}, key=len, reverse=True)
 
@@ -200,6 +302,15 @@ class PDFParser:
             r'^Include\s+your',  # Instructions
             r'^Don\'t\s+forget\s+to',  # Instructions
         ]
+        # Precompute canonical lookup for faster section tagging
+        self._section_alias_lookup = self._build_section_alias_lookup()
+        self._inline_header_keywords = set([
+            'experience', 'work experience', 'employment', 'professional experience',
+            'education', 'academic background', 'skills', 'technical skills',
+            'projects', 'project experience', 'certifications', 'achievements',
+            'awards', 'volunteer', 'activities', 'summary', 'objective', 'profile',
+            'languages', 'contact'
+        ])
 
     def extract_to_json(self, pdf_file_path: str, original_filename: str) -> str:
         structured_data = self._extract_structured_data(pdf_file_path)
@@ -243,6 +354,10 @@ class PDFParser:
             'processing_status': 'completed'
         }
         
+        # Log backend configuration
+        logger.info(f"[PARSER] Starting extraction for {os.path.basename(pdf_file_path)}")
+        logger.info(f"[PARSER] PARSER_BACKEND={PARSER_BACKEND}, PYMUPDF4LLM_AVAILABLE={PYMUPDF4LLM_AVAILABLE}")
+        
         # Quick cache: return if we have a cached structured output for this file hash
         with time_phase("probe_cache", timing_bucket):
             file_hash = self._hash_file(pdf_file_path)
@@ -252,55 +367,124 @@ class PDFParser:
                     with open(cache_path, 'r', encoding='utf-8') as cf:
                         cached = json.load(cf)
                         if isinstance(cached, dict) and cached.get('sections'):
+                            if 'canonical_sections' not in cached:
+                                tagged, canonical = self._tag_sections_with_canonical_labels(cached.get('sections', []))
+                                cached['sections'] = tagged
+                                cached['canonical_sections'] = canonical
+                            logger.info(f"[PARSER] Using cached result with {len(cached.get('sections', []))} sections")
                             return cached
                 except Exception:
                     pass
 
-        with pdfplumber.open(pdf_file_path) as pdf:
-            # Set meta.pages_total from actual PDF length
-            pages_total = len(pdf.pages)
-            pages_processed = min(pages_total, MAX_PAGES)
+        # Try pymupdf4llm first if configured
+        extraction_method = None
+        if PARSER_BACKEND == "pymupdf4llm" and PYMUPDF4LLM_AVAILABLE:
+            logger.info("[PARSER] Attempting pymupdf4llm extraction")
+            extraction_method = "pymupdf4llm"
+            with time_phase("extract_pymupdf4llm", timing_bucket):
+                text_elements, all_lines_markdown = self._extract_text_pymupdf4llm(pdf_file_path)
             
-            # Extract text with layout metadata (prefer PyMuPDF when available)
-            with time_phase("extract_fast", timing_bucket):
-                text_elements = self._extract_text_fast(pdf_file_path)
-            
-            if not text_elements:
-                with time_phase("extract_pdfplumber", timing_bucket):
-                    text_elements = self._extract_text_with_layout(pdf)
-            
-            if not text_elements:
-                structured_data['success'] = False
-                structured_data['error'] = 'No text could be extracted from PDF'
-                return structured_data
-            
-            # Store layout metadata for ML processing
-            structured_data['layout_metadata'] = {
-                'text_elements': text_elements,
-                'font_statistics': self._calculate_font_statistics(text_elements),
-                'layout_analysis': self._analyze_layout(text_elements)
-            }
+            if text_elements:
+                logger.info(f"[PARSER] pymupdf4llm extracted {len(text_elements)} text elements")
+                # Use markdown lines directly for better section detection
+                pages_total = len(set(te.get('page', 0) for te in text_elements))
+                pages_processed = min(pages_total, MAX_PAGES)
+            else:
+                logger.warning("[PARSER] pymupdf4llm returned no elements, falling back to fitz/pdfplumber")
+                extraction_method = "fitz_fallback"
+                # Fallback to standard extraction
+                with pdfplumber.open(pdf_file_path) as pdf:
+                    pages_total = len(pdf.pages)
+                    pages_processed = min(pages_total, MAX_PAGES)
+                    
+                    with time_phase("extract_fast", timing_bucket):
+                        text_elements = self._extract_text_fast(pdf_file_path)
+                    
+                    if not text_elements:
+                        logger.info("[PARSER] fitz fast path returned no elements, using pdfplumber")
+                        extraction_method = "pdfplumber"
+                        with time_phase("extract_pdfplumber", timing_bucket):
+                            text_elements = self._extract_text_with_layout(pdf)
+                    else:
+                        logger.info(f"[PARSER] fitz fast path extracted {len(text_elements)} text elements")
+                    
+                    all_lines_markdown = None
+        else:
+            # Standard extraction path
+            logger.info(f"[PARSER] Using standard extraction (pymupdf4llm not available or not configured)")
+            with pdfplumber.open(pdf_file_path) as pdf:
+                # Set meta.pages_total from actual PDF length
+                pages_total = len(pdf.pages)
+                pages_processed = min(pages_total, MAX_PAGES)
+                
+                # Extract text with layout metadata (prefer PyMuPDF when available)
+                with time_phase("extract_fast", timing_bucket):
+                    text_elements = self._extract_text_fast(pdf_file_path)
+                
+                if not text_elements:
+                    logger.info("[PARSER] fitz fast path returned no elements, using pdfplumber")
+                    extraction_method = "pdfplumber"
+                    with time_phase("extract_pdfplumber", timing_bucket):
+                        text_elements = self._extract_text_with_layout(pdf)
+                else:
+                    extraction_method = "fitz"
+                    logger.info(f"[PARSER] fitz fast path extracted {len(text_elements)} text elements")
+                
+                all_lines_markdown = None
+        
+        if not text_elements:
+            structured_data['success'] = False
+            structured_data['error'] = 'No text could be extracted from PDF'
+            logger.error("[PARSER] No text elements extracted from PDF")
+            return structured_data
+        
+        # Log extraction results and font info availability
+        logger.info(f"[PARSER] Extraction method: {extraction_method or 'unknown'}, extracted {len(text_elements)} text elements")
+        font_info_available = sum(1 for te in text_elements[:10] if te.get('font_size') and te.get('font_size') != 12) > 0
+        bold_info_available = any(te.get('is_bold') for te in text_elements[:10])
+        logger.info(f"[PARSER] Font info available: font_size={font_info_available}, is_bold={bold_info_available}")
+        if text_elements:
+            sample_elements = text_elements[:3]
+            for i, te in enumerate(sample_elements):
+                logger.debug(f"[PARSER] Sample element {i}: text='{te.get('text', '')[:50]}...', font_size={te.get('font_size')}, is_bold={te.get('is_bold')}, x={te.get('x')}, y={te.get('y')}")
+        
+        # Store layout metadata for ML processing
+        structured_data['layout_metadata'] = {
+            'text_elements': text_elements,
+            'font_statistics': self._calculate_font_statistics(text_elements),
+            'layout_analysis': self._analyze_layout(text_elements)
+        }
 
-            # Build positional context lists for header scoring
-            self._last_line_positions = []
-            self._left_margin_by_page = {}
-            self._font_median_by_page = {}
-            
-            # Compute per-page left margin and font median
-            by_page: Dict[int, List[Dict[str, Any]]] = {}
-            for te in text_elements:
-                by_page.setdefault(int(te.get('page', 0)), []).append(te)
-            for pg, elems in by_page.items():
-                xs = [float(e.get('x', 0) or 0.0) for e in elems if e.get('x') is not None]
-                fsz = [float(e.get('font_size', 0) or 0.0) for e in elems if e.get('font_size')]
-                if xs:
-                    self._left_margin_by_page[pg] = min(xs)
-                if fsz:
-                    fsz_sorted = sorted(f for f in fsz if f > 0)
-                    if fsz_sorted:
-                        self._font_median_by_page[pg] = fsz_sorted[len(fsz_sorted)//2]
-            
-            # Extract clean text lines for current processing
+        # Build positional context lists for header scoring
+        self._last_line_positions = []
+        self._left_margin_by_page = {}
+        self._font_median_by_page = {}
+        
+        # Compute per-page left margin and font median
+        by_page: Dict[int, List[Dict[str, Any]]] = {}
+        for te in text_elements:
+            by_page.setdefault(int(te.get('page', 0)), []).append(te)
+        for pg, elems in by_page.items():
+            xs = [float(e.get('x', 0) or 0.0) for e in elems if e.get('x') is not None]
+            fsz = [float(e.get('font_size', 0) or 0.0) for e in elems if e.get('font_size')]
+            if xs:
+                self._left_margin_by_page[pg] = min(xs)
+            if fsz:
+                fsz_sorted = sorted(f for f in fsz if f > 0)
+                if fsz_sorted:
+                    self._font_median_by_page[pg] = fsz_sorted[len(fsz_sorted)//2]
+        
+        # Extract clean text lines for current processing
+        if all_lines_markdown:
+            # Use markdown lines directly from pymupdf4llm
+            all_lines = all_lines_markdown
+            # Still need to build position tracking for header scoring
+            self._last_line_positions = [
+                (
+                    te.get('font_size'), te.get('is_bold'), te.get('x'), te.get('y'), int(te.get('page', 0))
+                ) for te in text_elements if te['text'].strip()
+            ]
+        else:
             all_lines = [elem['text'] for elem in text_elements if elem['text'].strip()]
             # Align positions with lines
             self._last_line_positions = [
@@ -308,44 +492,65 @@ class PDFParser:
                     te.get('font_size'), te.get('is_bold'), te.get('x'), te.get('y'), int(te.get('page', 0))
                 ) for te in text_elements if te['text'].strip()
             ]
-            
-            with time_phase("normalize_lines", timing_bucket):
-                all_lines = self._normalize_lines(all_lines)
-                all_lines = self._strip_repeated_headers_footers(all_lines)
-            
-            # Clean and preprocess lines
-            with time_phase("clean_lines", timing_bucket):
-                cleaned_lines = self._clean_lines(all_lines)
-            
-            # Detect actual section headers and group content
-            with time_phase("detect_sections", timing_bucket):
-                sections = self._detect_sections_and_group_content(cleaned_lines)
-            
-            # Apply final quality check
-            with time_phase("final_qc", timing_bucket):
-                sections = self._final_quality_check(sections)
-            
-            structured_data['sections'] = sections
-            
-            with time_phase("summary_build", timing_bucket):
-                structured_data['summary'] = self._generate_accurate_summary(sections, cleaned_lines)
-            
-            # Set meta information
-            structured_data['meta'] = {
-                'pages_total': pages_total,
-                'pages_processed': pages_processed,
-                'source_file': os.path.basename(pdf_file_path)
-            }
+        
+        with time_phase("normalize_lines", timing_bucket):
+            all_lines = self._normalize_lines(all_lines)
+            all_lines = self._strip_repeated_headers_footers(all_lines)
+        
+        # Clean and preprocess lines
+        with time_phase("clean_lines", timing_bucket):
+            cleaned_lines = self._clean_lines(all_lines)
+        
+        # Detect actual section headers and group content
+        with time_phase("detect_sections", timing_bucket):
+            sections = self._detect_sections_and_group_content(cleaned_lines)
+        
+        # Apply final quality check
+        with time_phase("final_qc", timing_bucket):
+            sections = self._final_quality_check(sections)
 
-            # Save cache
-            with time_phase("save_cache", timing_bucket):
-                try:
-                    with open(cache_path, 'w', encoding='utf-8') as cf:
-                        json.dump(structured_data, cf, indent=2, ensure_ascii=False)
-                except Exception:
-                    pass
-            
-            return structured_data
+        sections, canonical_sections = self._tag_sections_with_canonical_labels(sections)
+        structured_data['sections'] = sections
+        structured_data['canonical_sections'] = canonical_sections
+        
+        # Log section detection results
+        logger.info(f"[PARSER] Final section count: {len(sections)}")
+        if sections:
+            section_headers = [s.get('header', '') for s in sections[:5]]
+            logger.info(f"[PARSER] Section headers (first 5): {section_headers}")
+            for i, section in enumerate(sections[:5]):
+                content_len = sum(len(str(item)) for item in section.get('content', []))
+                canonical = section.get('canonical', 'unknown')
+                logger.info(f"[PARSER] Section {i}: header='{section.get('header', '')}', canonical='{canonical}', content_length={content_len}")
+        else:
+            logger.warning("[PARSER] No sections detected!")
+        
+        if canonical_sections:
+            logger.info(f"[PARSER] Canonical sections present: {list(canonical_sections.keys())}")
+            for key, value in canonical_sections.items():
+                logger.debug(f"[PARSER] Canonical '{key}': {len(value)} chars")
+        else:
+            logger.warning("[PARSER] No canonical_sections generated!")
+        
+        with time_phase("summary_build", timing_bucket):
+            structured_data['summary'] = self._generate_accurate_summary(sections, cleaned_lines)
+        
+        # Set meta information
+        structured_data['meta'] = {
+            'pages_total': pages_total,
+            'pages_processed': pages_processed,
+            'source_file': os.path.basename(pdf_file_path)
+        }
+
+        # Save cache
+        with time_phase("save_cache", timing_bucket):
+            try:
+                with open(cache_path, 'w', encoding='utf-8') as cf:
+                    json.dump(structured_data, cf, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+        
+        return structured_data
 
     def _extract_text_with_layout(self, pdf) -> List[Dict[str, Any]]:
         """Extract text with layout metadata (font size, weight, coordinates)."""
@@ -388,15 +593,72 @@ class PDFParser:
         return text_elements
 
     def _extract_text_fast(self, pdf_file_path: str) -> Optional[List[Dict[str, Any]]]:
-        """Fast path: use PyMuPDF to extract text blocks if available; OCR only when needed."""
+        """Fast path: use PyMuPDF to extract text blocks with font information if available."""
         if not (USE_PYMUPDF and fitz is not None):
             return None
         try:
             doc = fitz.open(pdf_file_path)
             text_elements: List[Dict[str, Any]] = []
+            font_info_available = False
+            
             for page_num, page in enumerate(doc[:MAX_PAGES]):
-                blocks = page.get_text("blocks") or []  # list of (x0, y0, x1, y1, text, block_no, ...)
-                # Filter and normalize
+                # Try to get text with font information using "dict" format
+                try:
+                    text_dict = page.get_text("dict")
+                    if text_dict and text_dict.get('blocks'):
+                        font_info_available = True
+                        for block in text_dict['blocks']:
+                            if block.get('type') == 0:  # Text block
+                                bbox = block.get('bbox', [0, 0, 0, 0])
+                                x0, y0, x1, y1 = bbox[0], bbox[1], bbox[2], bbox[3]
+                                
+                                # Extract text spans with font info
+                                for line in block.get('lines', []):
+                                    line_bbox = line.get('bbox', [x0, y0, x1, y1])
+                                    line_y = line_bbox[1]
+                                    line_x = line_bbox[0]
+                                    
+                                    # Collect spans in this line
+                                    line_text_parts = []
+                                    line_font_size = 12.0
+                                    line_is_bold = False
+                                    line_is_italic = False
+                                    
+                                    for span in line.get('spans', []):
+                                        span_text = span.get('text', '').strip()
+                                        if span_text:
+                                            line_text_parts.append(span_text)
+                                            # Use font size from span if available
+                                            span_font_size = span.get('size', 12.0)
+                                            if span_font_size and span_font_size > 0:
+                                                line_font_size = max(line_font_size, span_font_size)
+                                            # Check for bold/italic
+                                            font_flags = span.get('flags', 0)
+                                            if font_flags & 16:  # Bold flag
+                                                line_is_bold = True
+                                            if font_flags & 1:  # Italic flag
+                                                line_is_italic = True
+                                    
+                                    if line_text_parts:
+                                        line_text = ' '.join(line_text_parts)
+                                        norm = self._normalize_text(line_text)
+                                        if norm.strip():
+                                            text_elements.append({
+                                                'text': norm.strip(),
+                                                'page': page_num,
+                                                'y': float(line_y),
+                                                'x': float(line_x),
+                                                'font_size': line_font_size,
+                                                'font_name': 'unknown',
+                                                'is_bold': line_is_bold,
+                                                'is_italic': line_is_italic
+                                            })
+                        continue  # Successfully used dict format, skip blocks fallback
+                except Exception as e:
+                    logger.debug(f"Failed to extract font info from page {page_num}: {e}")
+                
+                # Fallback to blocks if dict format failed
+                blocks = page.get_text("blocks") or []
                 for blk in blocks:
                     if len(blk) < 5:
                         continue
@@ -417,8 +679,15 @@ class PDFParser:
                                 'is_bold': False,
                                 'is_italic': False
                             })
+            
             # Sort to preserve two-column order (y, x)
             text_elements.sort(key=lambda e: (e.get('y', 0), e.get('x', 0)))
+            
+            if font_info_available:
+                logger.debug(f"[FONT_EXTRACT] Extracted font information for {len(text_elements)} elements")
+            else:
+                logger.debug(f"[FONT_EXTRACT] No font information available, using defaults")
+            
             # Quick probe: if we have reasonable amount of text, skip slower path
             if sum(len(te['text']) for te in text_elements) > 50:
                 return text_elements
@@ -426,6 +695,48 @@ class PDFParser:
         except Exception as e:
             logger.debug(f"PyMuPDF fast extract failed: {e}")
             return None
+
+    def _extract_text_pymupdf4llm(self, pdf_file_path: str) -> Tuple[Optional[List[Dict[str, Any]]], Optional[List[str]]]:
+        """Extract text using pymupdf4llm for markdown-formatted output."""
+        try:
+            import pymupdf4llm
+            markdown_text = pymupdf4llm.to_markdown(pdf_file_path, pages=range(MAX_PAGES))
+            
+            if not markdown_text or not markdown_text.strip():
+                logger.debug(f"[PARSER] PyMuPDF4LLM returned empty markdown (length: {len(markdown_text) if markdown_text else 0})")
+                return None, None
+            
+            # Split markdown into lines for section detection
+            markdown_lines = markdown_text.split('\n')
+            
+            # Also create text_elements for compatibility with existing code
+            text_elements: List[Dict[str, Any]] = []
+            page_num = 0
+            y_pos = 0
+            
+            for line in markdown_lines:
+                if line.strip():
+                    # Markdown headers (##) are strong section indicators
+                    is_header = line.strip().startswith('##')
+                    text_elements.append({
+                        'text': line.strip(),
+                        'page': page_num,
+                        'y': float(y_pos),
+                        'x': 0.0,
+                        'font_size': 14.0 if is_header else 12.0,
+                        'font_name': 'unknown',
+                        'is_bold': is_header,
+                        'is_italic': False
+                    })
+                    y_pos += 20
+            
+            logger.info(f"[PARSER] PyMuPDF4LLM extracted {len(text_elements)} elements from {len(markdown_lines)} markdown lines")
+            return text_elements, markdown_lines
+        except Exception as e:
+            logger.warning(f"[PARSER] pymupdf4llm extract failed: {e}")
+            import traceback
+            logger.debug(f"[PARSER] PyMuPDF4LLM traceback: {traceback.format_exc()}")
+            return None, None
 
     def _group_chars_into_blocks(self, chars: List[Dict], page_num: int) -> List[Dict[str, Any]]:
         """Group individual characters into text blocks based on proximity and formatting."""
@@ -871,6 +1182,234 @@ class PDFParser:
             cleaned_lines.append(line)
             
         return cleaned_lines
+    
+    @staticmethod
+    def _normalize_header_candidate(text: str) -> str:
+        candidate = (text or '').strip().lower()
+        candidate = re.sub(r'^[^a-z0-9]+', '', candidate)
+        candidate = re.sub(r'[^a-z0-9]+$', '', candidate)
+        candidate = re.sub(r'\s+', ' ', candidate)
+        return candidate
+
+    def _build_section_alias_lookup(self) -> Dict[str, str]:
+        lookup: Dict[str, str] = {}
+        for canonical, aliases in SECTION_SYNONYMS.items():
+            for alias in aliases:
+                norm_alias = self._normalize_header_candidate(alias)
+                if norm_alias:
+                    lookup[norm_alias] = canonical
+        return lookup
+
+    def _canonicalize_header(self, header: str, content: List[str]) -> str:
+        candidate = self._normalize_header_candidate(header)
+        if candidate and candidate in self._section_alias_lookup:
+            return self._section_alias_lookup[candidate]
+
+        # Fuzzy match against known aliases
+        best_label = None
+        best_ratio = 0.0
+        for canonical, aliases in SECTION_SYNONYMS.items():
+            for alias in aliases:
+                alias_norm = self._normalize_header_candidate(alias)
+                if not alias_norm:
+                    continue
+                if alias_norm == candidate and alias_norm:
+                    return canonical
+                ratio = difflib.SequenceMatcher(None, candidate or '', alias_norm).ratio()
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_label = canonical
+        if best_ratio >= 0.90 and best_label:
+            return best_label
+
+        # Content-based heuristics - but be more conservative
+        # Only use content hints if we have substantial content and clear signals
+        content_blob = ' '.join(content or []).lower()
+        if content_blob and len(content_blob) > 50:  # Require substantial content
+            hint_scores: Dict[str, int] = {}
+            for canonical in CANONICAL_SECTION_PRIORITY:
+                hints = CONTENT_HINTS.get(canonical, [])
+                if not hints:
+                    continue
+                hits = sum(1 for hint in hints if hint in content_blob)
+                if hits:
+                    hint_scores[canonical] = hits
+            if hint_scores:
+                best_canonical, hits = max(hint_scores.items(), key=lambda kv: kv[1])
+                # Require more hits for experience to avoid false positives
+                minimum_hits = 3 if best_canonical == 'experience' else 2
+                if hits >= minimum_hits:
+                    return best_canonical
+
+        return 'misc'
+
+    def _tag_sections_with_canonical_labels(self, sections: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+        if not sections:
+            return [], {}
+
+        aggregated_lists: Dict[str, List[str]] = {key: [] for key in CANONICAL_SECTION_PRIORITY}
+        tagged_sections: List[Dict[str, Any]] = []
+
+        for section in sections:
+            header = section.get('header', '')
+            content = section.get('content', []) or []
+            canonical = self._canonicalize_header(header, content)
+            enriched = dict(section)
+            enriched['canonical'] = canonical
+            tagged_sections.append(enriched)
+            if content:
+                aggregated_lists.setdefault(canonical, []).extend(content)
+
+        aggregated = {
+            key: ' '.join(values).strip()
+            for key, values in aggregated_lists.items()
+            if values
+        }
+        return tagged_sections, aggregated
+
+    def _enforce_core_sections(self, sections: List[Dict[str, Any]], lines: List[str]) -> List[Dict[str, Any]]:
+        """Ensure core sections (experience, skills, education) exist before returning."""
+        if not sections:
+            return sections
+
+        label_counts: Dict[str, int] = {}
+        total_content_length = 0
+        
+        for section in sections:
+            canonical = self._canonicalize_header(section.get('header', ''), section.get('content', []))
+            section['canonical'] = canonical
+            if canonical:
+                label_counts[canonical] = label_counts.get(canonical, 0) + 1
+            # Track total content to detect if one section has everything
+            content = section.get('content', [])
+            if isinstance(content, list):
+                total_content_length += sum(len(str(item)) for item in content)
+            elif isinstance(content, str):
+                total_content_length += len(content)
+
+        # Check if one section has too much content (indicates misclassification)
+        for section in sections:
+            canonical = section.get('canonical', '')
+            content = section.get('content', [])
+            section_length = 0
+            if isinstance(content, list):
+                section_length = sum(len(str(item)) for item in content)
+            elif isinstance(content, str):
+                section_length = len(content)
+            
+            # If one section has >80% of content and it's not clearly labeled, redistribute
+            if total_content_length > 0 and section_length / total_content_length > 0.8:
+                logger.warning(f"[ENFORCE_CORE] Section '{canonical}' has {section_length}/{total_content_length} chars ({100*section_length/total_content_length:.1f}%) - attempting to split")
+                if canonical == 'experience' and len(sections) == 1:
+                    # This is the problem case - everything in experience
+                    # Try to split it properly
+                    logger.warning(f"[ENFORCE_CORE] Detected single large section with {section_length} chars, attempting to split")
+                    # Don't just recover - try to split the existing section
+                    split_sections = self._split_large_section(section, lines)
+                    if split_sections and len(split_sections) > 1:
+                        logger.info(f"[ENFORCE_CORE] Successfully split large section into {len(split_sections)} sections")
+                        return split_sections
+                    else:
+                        logger.warning(f"[ENFORCE_CORE] Failed to split large section")
+
+        core_labels = ['experience', 'skills', 'education']
+        missing = [label for label in core_labels if label_counts.get(label, 0) == 0]
+        if not missing:
+            return sections
+
+        # Only recover if we don't have a single massive section
+        if len(sections) > 1 or total_content_length < 1000:
+            recovered = self._recover_sections_from_keywords(lines, missing)
+            if recovered:
+                sections.extend(recovered)
+        return sections
+    
+    def _split_large_section(self, section: Dict[str, Any], all_lines: List[str]) -> Optional[List[Dict[str, Any]]]:
+        """Split a large section that likely contains multiple sections."""
+        content = section.get('content', [])
+        if not content:
+            return None
+        
+        # Convert content to lines if needed
+        if isinstance(content, list):
+            content_lines = []
+            for item in content:
+                if isinstance(item, str):
+                    content_lines.extend(item.split('\n'))
+                else:
+                    content_lines.append(str(item))
+        else:
+            content_lines = content.split('\n')
+        
+        # Try aggressive detection on this content
+        split_sections = self._detect_inline_sections_aggressive(content_lines)
+        if not split_sections or len(split_sections) <= 1:
+            split_sections = self._split_by_keywords(content_lines)
+        
+        return split_sections if split_sections and len(split_sections) > 1 else None
+
+    def _recover_sections_from_keywords(self, lines: List[str], missing_labels: List[str]) -> List[Dict[str, Any]]:
+        """Recover sections by scanning for inline headers when parser missed them."""
+        if not lines or not missing_labels:
+            return []
+
+        missing = set(missing_labels)
+        markers: List[Tuple[int, str, str]] = []
+        for idx, raw_line in enumerate(lines):
+            candidate = raw_line.strip()
+            if not candidate:
+                continue
+            canonical = self._canonicalize_header(candidate, [])
+            if canonical in missing:
+                markers.append((idx, candidate, canonical))
+                missing.discard(canonical)
+                if not missing:
+                    break
+
+        if not markers:
+            return []
+
+        recovered_sections: List[Dict[str, Any]] = []
+        markers.append((len(lines), '', ''))
+        for i in range(len(markers) - 1):
+            start_idx = markers[i][0] + 1
+            end_idx = markers[i + 1][0]
+            chunk = [ln.strip() for ln in lines[start_idx:end_idx] if ln.strip()]
+            grouped = self._group_content_lines(chunk)
+            canonical = markers[i][2]
+            if grouped and canonical:
+                recovered_sections.append({
+                    'header': markers[i][1] or canonical.title(),
+                    'content': grouped,
+                    'canonical': canonical
+                })
+        return recovered_sections
+
+    def _looks_like_inline_header(self, candidate: str) -> bool:
+        cand = (candidate or '').strip()
+        if not cand:
+            return False
+
+        cand = re.sub(r'^[\u2022\u25CF\-\*\s]+', '', cand)
+        cand = cand.strip()
+        if not cand:
+            return False
+
+        if self._header_score(cand) >= HEADER_CANDIDATE_THRESHOLD:
+            return True
+
+        words = cand.split()
+        alpha_chars = sum(1 for ch in cand if ch.isalpha())
+        uppercase_chars = sum(1 for ch in cand if ch.isupper())
+        uppercase_ratio = (uppercase_chars / alpha_chars) if alpha_chars else 0.0
+        candidate_lower = cand.lower()
+        keyword_hit = any(keyword in candidate_lower for keyword in self._inline_header_keywords)
+
+        if (len(cand) <= 80 and len(words) <= 8 and uppercase_ratio >= 0.6):
+            return True
+        if (len(cand) <= 60 and keyword_hit):
+            return True
+        return False
 
     def _normalize_lines(self, lines: List[str]) -> List[str]:
         """Normalization: NFKC, fix ligatures, de-hyphen at line breaks, unify bullets."""
@@ -912,11 +1451,17 @@ class PDFParser:
             current_header = section['header']
             current_content = []
             for line in content:
-                # Use header detection logic; line_index and all_lines are not meaningful here, so pass dummy values
-                if self._is_actual_section_header(line, 0, [line]):
+                line_clean = line.strip()
+                if not line_clean:
+                    if current_content:
+                        current_content.append(line)
+                    continue
+
+                is_header = self._looks_like_inline_header(line_clean) or self._is_actual_section_header(line_clean, 0, [line_clean])
+                if is_header:
                     if current_content:
                         new_sections.append({'header': current_header, 'content': current_content})
-                    current_header = line
+                    current_header = line_clean
                     current_content = []
                 else:
                     current_content.append(line)
@@ -931,11 +1476,22 @@ class PDFParser:
     def _detect_sections_and_group_content(self, lines: List[str]) -> List[Dict[str, Any]]:
         """Detect actual section headers and group content properly."""
         sections = []
+        logger.info(f"[SECTION_DETECT] Starting section detection on {len(lines)} lines")
         
         # First pass: score potential headers
         candidates: List[Tuple[int, str, float, Dict[str, Any]]] = []  # (idx, text, score, feat)
         prev_y = None
         for i, line in enumerate(lines):
+            line_stripped = line.strip()
+            
+            # Check for markdown headers first (## or ###)
+            if line_stripped.startswith('##'):
+                # Markdown header - very high confidence
+                header_text = line_stripped.lstrip('#').strip()
+                if header_text:
+                    candidates.append((i, header_text, 1.0, {'font_size': 16.0, 'x': 0.0, 'is_markdown': True}))
+                    continue
+            
             font_size = is_bold = x = y = page = left_margin = None
             if i < len(self._last_line_positions):
                 font_size, is_bold, x, y, page = self._last_line_positions[i]
@@ -944,24 +1500,35 @@ class PDFParser:
             score = self._header_score(line, font_size=font_size, is_bold=is_bold, x=x, y=y, prev_y=prev_y, left_margin=left_margin)
             prev_y = y if y is not None else prev_y
             # Standalone constraint: allow trailing ':' but not '.'
-            standalone_ok = not TRAILING_PERIOD_RE.search(line.strip()) or line.strip().endswith(':')
-            if score >= 0.60 and standalone_ok:
-                candidates.append((i, line, score, {'font_size': font_size or 0.0, 'x': x or 0.0}))
+            standalone_ok = not TRAILING_PERIOD_RE.search(line_stripped) or line_stripped.endswith(':')
+            if score >= HEADER_CANDIDATE_THRESHOLD and standalone_ok:
+                candidates.append((i, line_stripped, score, {'font_size': font_size or 0.0, 'x': x or 0.0}))
         
-        # If no clear headers found, create a single section
+        logger.info(f"[SECTION_DETECT] Found {len(candidates)} header candidates (threshold={HEADER_CANDIDATE_THRESHOLD})")
+        if candidates:
+            top_candidates = sorted(candidates, key=lambda x: x[2], reverse=True)[:5]
+            for idx, text, score, feat in top_candidates:
+                logger.info(f"[SECTION_DETECT] Top candidate: line {idx}, text='{text[:50]}', score={score:.3f}, font_size={feat.get('font_size', 'N/A')}")
+        
+        # If no clear headers found, try harder to find inline headers
         if not candidates:
+            logger.warning("[SECTION_DETECT] No header candidates found, using fallback detection")
             # Look for contact info at the beginning
             contact_lines = []
             content_lines = []
+            contact_end_idx = 0
             
-            for i, line in enumerate(lines[:10]):  # Check first 10 lines for contact info
+            for i, line in enumerate(lines[:15]):  # Check first 15 lines for contact info
                 if self._contains_contact_info(line):
                     contact_lines.append(line)
-                else:
-                    content_lines.append(line)
+                    contact_end_idx = i + 1
+                elif contact_lines and i < contact_end_idx + 2:
+                    # Allow 2 lines after contact info to be part of contact section
+                    contact_lines.append(line)
+                    contact_end_idx = i + 1
             
             # Add remaining lines to content
-            content_lines.extend(lines[len(contact_lines):])
+            content_lines = lines[contact_end_idx:] if contact_end_idx > 0 else lines
             
             if contact_lines:
                 sections.append({
@@ -969,13 +1536,30 @@ class PDFParser:
                     'content': contact_lines
                 })
             
+            # Try much harder to find inline headers in content
             if content_lines:
-                sections.append({
-                    'header': 'Resume Content',
-                    'content': content_lines
-                })
-                
-            return sections
+                logger.info(f"[SECTION_DETECT] Attempting aggressive inline detection on {len(content_lines)} content lines")
+                inline_sections = self._detect_inline_sections_aggressive(content_lines)
+                logger.info(f"[SECTION_DETECT] Aggressive inline detection found {len(inline_sections)} sections")
+                if inline_sections and len(inline_sections) > 1:
+                    sections.extend(inline_sections)
+                else:
+                    # Last resort: try keyword-based section splitting
+                    logger.info(f"[SECTION_DETECT] Attempting keyword-based splitting on {len(content_lines)} content lines")
+                    keyword_sections = self._split_by_keywords(content_lines)
+                    logger.info(f"[SECTION_DETECT] Keyword-based splitting found {len(keyword_sections)} sections")
+                    if keyword_sections and len(keyword_sections) > 1:
+                        sections.extend(keyword_sections)
+                    else:
+                        # Only create single section if we truly can't find any structure
+                        logger.warning(f"[SECTION_DETECT] All detection methods failed, creating single 'Resume Content' blob with {len(content_lines)} lines")
+                        sections.append({
+                            'header': 'Resume Content',
+                            'content': content_lines
+                        })
+
+            sections = self._split_sections_on_embedded_headers(sections)
+            return self._enforce_core_sections(sections, lines)
         
         # Tie-break & deduplicate adjacent headers (keep higher score)
         deduped: List[Tuple[int, str, float, Dict[str, Any]]] = []
@@ -1030,6 +1614,190 @@ class PDFParser:
         
         # At the end, add this post-processing step:
         sections = self._split_sections_on_embedded_headers(sections)
+        sections = self._enforce_core_sections(sections, lines)
+        return sections
+
+    def _detect_inline_sections(self, lines: List[str]) -> List[Dict[str, Any]]:
+        """Detect probable headers within a flat list of lines and split into sections."""
+        sections: List[Dict[str, Any]] = []
+        current_header: Optional[str] = None
+        current_content: List[str] = []
+
+        def flush():
+            if current_header and current_content:
+                sections.append({'header': current_header.strip(), 'content': current_content.copy()})
+
+        for line in lines:
+            candidate = line.strip()
+            if not candidate:
+                if current_content:
+                    current_content.append(line)
+                continue
+
+            if self._looks_like_inline_header(candidate):
+                flush()
+                current_header = candidate
+                current_content = []
+            else:
+                if current_header is None:
+                    current_header = 'Resume Content'
+                    current_content = []
+                current_content.append(line)
+
+        flush()
+        return sections
+
+    def _detect_inline_sections_aggressive(self, lines: List[str]) -> List[Dict[str, Any]]:
+        """More aggressive inline section detection with lower thresholds."""
+        sections: List[Dict[str, Any]] = []
+        current_header: Optional[str] = None
+        current_content: List[str] = []
+
+        def flush():
+            if current_header and current_content:
+                sections.append({'header': current_header.strip(), 'content': current_content.copy()})
+
+        for i, line in enumerate(lines):
+            candidate = line.strip()
+            if not candidate:
+                if current_content:
+                    current_content.append(line)
+                continue
+
+            # Lower threshold for header detection
+            is_header = False
+            candidate_lower = candidate.lower()
+            
+            # Check against section synonyms with lower threshold - more flexible matching
+            for canonical, aliases in SECTION_SYNONYMS.items():
+                for alias in aliases:
+                    alias_lower = alias.lower()
+                    # Exact match
+                    if alias_lower == candidate_lower:
+                        is_header = True
+                        candidate = alias.title()
+                        break
+                    # Starts with alias + colon or space
+                    if candidate_lower.startswith(alias_lower + ':') or candidate_lower.startswith(alias_lower + ' '):
+                        is_header = True
+                        candidate = alias.title()
+                        break
+                    # Contains alias as whole word (for "Work Experience", "Technical Skills", etc.)
+                    if re.search(r'\b' + re.escape(alias_lower) + r'\b', candidate_lower):
+                        # Make sure it's not buried in a long sentence
+                        if len(candidate) <= 60:
+                            is_header = True
+                            candidate = alias.title()
+                            break
+                if is_header:
+                    break
+            
+            # Also check if it looks like a header (short, uppercase/title case, ends with colon)
+            if not is_header:
+                # More lenient: accept lines ending with colon that are reasonably short
+                if candidate.endswith(':') and len(candidate) <= 60:
+                    # Check if next line doesn't look like a header continuation
+                    if i + 1 < len(lines):
+                        next_line = lines[i + 1].strip()
+                        if not (next_line and (next_line.isupper() or len(next_line.split()) <= 3)):
+                            is_header = True
+                            # Try to extract the header text (remove colon)
+                            candidate = candidate[:-1].strip()
+                # Also accept short uppercase/title case lines
+                elif (len(candidate) <= 50 and 
+                      (candidate.isupper() or candidate.istitle()) and 
+                      len(candidate.split()) <= 6):
+                    # Check if next line doesn't look like a header continuation
+                    if i + 1 < len(lines):
+                        next_line = lines[i + 1].strip()
+                        if not (next_line and (next_line.isupper() or len(next_line.split()) <= 3)):
+                            is_header = True
+
+            if is_header:
+                flush()
+                current_header = candidate
+                current_content = []
+            else:
+                if current_header is None:
+                    current_header = 'Resume Content'
+                    current_content = []
+                current_content.append(line)
+
+        flush()
+        return sections
+
+    def _split_by_keywords(self, lines: List[str]) -> List[Dict[str, Any]]:
+        """Split content by looking for common section keywords."""
+        sections: List[Dict[str, Any]] = []
+        current_section: Optional[str] = None
+        current_content: List[str] = []
+        
+        # Expanded keywords that strongly indicate section starts
+        section_keywords = {
+            'experience': ['experience', 'work experience', 'employment', 'professional experience', 'career', 
+                          'work history', 'employment history', 'professional background', 'career history',
+                          'positions', 'roles', 'work'],
+            'skills': ['skills', 'technical skills', 'competencies', 'expertise', 'proficiencies', 
+                      'technologies', 'tools', 'tech stack', 'technical proficiencies', 'capabilities',
+                      'programming languages', 'software', 'platforms'],
+            'education': ['education', 'academic', 'qualifications', 'university', 'college', 'degree',
+                         'educational background', 'academic background', 'academic qualifications',
+                         'bachelor', 'master', 'phd', 'doctorate', 'diploma', 'certification'],
+            'projects': ['projects', 'project experience', 'portfolio', 'key projects', 'notable projects'],
+            'certifications': ['certifications', 'certificates', 'licenses', 'accreditations', 'credentials'],
+            'awards': ['awards', 'honors', 'achievements', 'recognition', 'accomplishments', 'distinctions']
+        }
+        
+        def flush():
+            if current_section and current_content:
+                sections.append({
+                    'header': current_section.title(),
+                    'content': current_content.copy()
+                })
+        
+        for line in lines:
+            line_stripped = line.strip()
+            if not line_stripped:
+                if current_content:
+                    current_content.append(line)
+                continue
+                
+            line_lower = line_stripped.lower()
+            found_section = None
+            
+            # Check if line contains a section keyword - more flexible matching
+            for section_name, keywords in section_keywords.items():
+                for keyword in keywords:
+                    keyword_lower = keyword.lower()
+                    # Exact match
+                    if keyword_lower == line_lower:
+                        found_section = section_name
+                        break
+                    # Starts with keyword + colon or space
+                    if line_lower.startswith(keyword_lower + ':') or line_lower.startswith(keyword_lower + ' '):
+                        found_section = section_name
+                        break
+                    # Contains keyword as whole word (for compound phrases)
+                    if re.search(r'\b' + re.escape(keyword_lower) + r'\b', line_lower):
+                        # Accept if line is reasonably short (not buried in content)
+                        if len(line_stripped) <= 80:
+                            # Prefer shorter lines
+                            if len(line_stripped) <= 50 or line_stripped.endswith(':'):
+                                found_section = section_name
+                                break
+                if found_section:
+                    break
+            
+            if found_section:
+                flush()
+                current_section = found_section
+                current_content = []
+            else:
+                if current_section is None:
+                    current_section = 'Resume Content'
+                current_content.append(line)
+        
+        flush()
         return sections
 
     def _is_actual_section_header(self, line: str, line_index: int, all_lines: List[str]) -> bool:
@@ -1046,7 +1814,7 @@ class PDFParser:
                 left_margin = self._left_margin_by_page[page]
         score = self._header_score(line_clean, font_size=font_size, is_bold=is_bold, x=x, y=y, prev_y=prev_y, left_margin=left_margin)
         standalone_ok = not TRAILING_PERIOD_RE.search(line_clean) or line_clean.endswith(':')
-        return score >= 0.60 and standalone_ok
+        return score >= HEADER_CANDIDATE_THRESHOLD and standalone_ok
 
     def _header_score(self, line_text: str, *, font_size: float | None = None, is_bold: bool | None = None,
                       x: float | None = None, y: float | None = None, prev_y: float | None = None,
@@ -1057,27 +1825,48 @@ class PDFParser:
             return 0.0
         text_lower = text.lower()
         score = 0.0
+        
+        # Check if font info is missing/unknown
+        font_info_missing = (font_size is None or font_size == 12.0) and (is_bold is None or is_bold is False)
 
         # Synonym match (strip bullets/colon)
         m = LEADING_BULLET_COLON_RE.match(text)
         core = (m.group(1) if m else text).strip().lower()
-        if core in ALL_SYNONYMS:
-            score += 0.25
+        if core:
+            # Strip surrounding punctuation/markup (e.g., "**SKILLS**", "__EXPERIENCE__")
+            core = re.sub(r'^[\W_]+', '', core)
+            core = re.sub(r'[\W_]+$', '', core)
+            core = re.sub(r'\s+', ' ', core).strip()
+
+        normalized_core = re.sub(r'[^a-z0-9\s]+', ' ', core).strip() if core else ""
+
+        # Exact synonym match - boost score if font info is missing
+        if normalized_core in ALL_SYNONYMS:
+            score += 0.65 if font_info_missing else 0.55
+        elif core in ALL_SYNONYMS:
+            score += 0.65 if font_info_missing else 0.55
         else:
-            # High similarity to any synonym
+            # High similarity to any synonym (allow partial containment)
             best_sim = 0.0
             for syn in ALL_SYNONYMS:
-                r = difflib.SequenceMatcher(None, core, syn).ratio()
+                if normalized_core and (normalized_core in syn or syn in normalized_core):
+                    best_sim = max(best_sim, 0.92)
+                    break
+                r = difflib.SequenceMatcher(None, normalized_core or core, syn).ratio()
                 if r > best_sim:
                     best_sim = r
                 if best_sim >= 0.90:
                     break
             if best_sim >= 0.85:
-                score += 0.15
+                # Boost similarity score if font info is missing
+                score += 0.40 if font_info_missing else 0.30
+            elif best_sim >= 0.75 and font_info_missing:
+                # Lower threshold when font info is missing
+                score += 0.25
 
-        # Font size vs page median
+        # Font size vs page median (only if font info is available)
         size_bonus = 0.0
-        if font_size and y is not None:
+        if font_size and font_size != 12.0 and y is not None:
             # find median for nearest page if known
             # page index recovered from nearest stored record
             page_idx = None
@@ -1101,8 +1890,15 @@ class PDFParser:
                 size_bonus = max(0.0, min(0.35, 0.35 * (ratio - 1.0)))
         score += size_bonus
 
-        # Bold bonus
-        if is_bold:
+        # Bold bonus (only if actually bold)
+        if is_bold is True:
+            score += 0.15
+        
+        # If font info is missing, boost score for lines ending with colon (common header pattern)
+        if font_info_missing and text.endswith(':'):
+            score += 0.20
+        # Also boost for short uppercase/title case lines (likely headers)
+        if font_info_missing and len(text) <= 50 and (text.isupper() or text.istitle()):
             score += 0.15
 
         # Vertical gap bonus
@@ -1119,7 +1915,7 @@ class PDFParser:
 
         # All-caps short line bonus
         if text.isupper() and len(text.split()) <= 5:
-            score += 0.10
+            score += 0.20
 
         # Noise penalties
         if EMAIL_RE.search(text) or URL_RE.search(text) or PHONE_RE.search(text) or FOOTER_RE.search(text):
@@ -1286,6 +2082,11 @@ class PDFParser:
         if not text:
             return ""
         
+        # Step 0: Reject contact info that shouldn't be in content sections
+        if self._contains_contact_info(text) and len(text) < 100:
+            # Short lines with contact info are likely misclassified headers
+            return ""
+        
         # Step 1: Fix corrupted ordinals
         text = self._fix_corrupted_ordinals(text)
         
@@ -1414,13 +2215,18 @@ class PDFParser:
     def _contains_contact_info(self, line: str) -> bool:
         """Check if a line contains contact information."""
         line_lower = line.lower()
+        line_stripped = line.strip()
         
         # Email pattern
-        if re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', line):
+        if EMAIL_RE.search(line):
             return True
             
         # Phone pattern
-        if re.search(r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b', line):
+        if PHONE_RE.search(line):
+            return True
+            
+        # LinkedIn/GitHub URLs
+        if URL_RE.search(line) and ('linkedin' in line_lower or 'github' in line_lower):
             return True
             
         # Address indicators
@@ -1431,6 +2237,19 @@ class PDFParser:
         # City, State ZIP pattern
         if re.search(r'\b[A-Za-z\s]+,\s*[A-Za-z]{2}\s*\d{5}\b', line):
             return True
+        
+        # Common contact patterns: email | phone | location
+        if '|' in line_stripped or '•' in line_stripped:
+            parts = re.split(r'[|•]', line_stripped)
+            contact_count = 0
+            for part in parts:
+                part = part.strip()
+                if EMAIL_RE.search(part) or PHONE_RE.search(part):
+                    contact_count += 1
+                elif len(part) < 30 and any(word in part.lower() for word in ['ca', 'ny', 'tx', 'fl', 'il', 'pa', 'oh', 'ga', 'nc', 'mi']):
+                    contact_count += 1
+            if contact_count >= 2:
+                return True
             
         return False
 
@@ -1461,11 +2280,25 @@ class PDFParser:
                 mostly_letters = all(word.replace('-', '').replace("'", '').isalpha() for word in words)
                 
                 if has_title_case and mostly_letters:
-                    # Additional check: avoid common non-name patterns
-                    if not any(pattern in line.lower() for pattern in [
+                    # Additional check: avoid common non-name patterns (job titles, organizations, etc.)
+                    job_title_patterns = [
                         'university', 'college', 'school', 'company', 'inc', 'llc', 'corp',
-                        'software', 'engineer', 'developer', 'manager', 'director', 'analyst'
-                    ]):
+                        'software', 'engineer', 'developer', 'manager', 'director', 'analyst',
+                        'coordinator', 'practicum', 'supervisor', 'specialist', 'consultant',
+                        'architect', 'scientist', 'lead', 'intern', 'founder', 'designer',
+                        'technician', 'administrator', 'officer', 'programmer', 'strategist',
+                        'editor', 'writer', 'producer', 'tester', 'trainer', 'teacher', 'mentor',
+                        'assistant', 'associate', 'executive', 'president', 'vice', 'chief',
+                        'head', 'senior', 'junior', 'principal', 'staff'
+                    ]
+                    # Also check for acronyms that are likely not names (BSIT, IT, CS, etc.)
+                    has_acronym = any(len(word) <= 4 and word.isupper() for word in words)
+                    # Check for common degree/academic patterns
+                    academic_patterns = ['bsit', 'bscs', 'bs', 'ba', 'ma', 'ms', 'phd', 'mba']
+                    
+                    if (not any(pattern in line.lower() for pattern in job_title_patterns) and
+                        not has_acronym and
+                        not any(acad in line.lower() for acad in academic_patterns)):
                         return line
         
         return ""
