@@ -10,7 +10,9 @@ from pathlib import Path
 from django.test import TestCase
 from django.conf import settings
 
-from ..batch_processor import BatchProcessor
+from unittest.mock import Mock, patch
+
+from ..batch_processor import BatchProcessor, ParsedResume, ResumeScores
 
 class BatchProcessorTestCase(TestCase):
     """Test cases for the BatchProcessor class."""
@@ -118,8 +120,6 @@ class BatchProcessorTestCase(TestCase):
     def test_batch_summary_generation(self):
         """Test batch summary generation."""
         # Mock resumes for testing
-        from unittest.mock import Mock
-        
         mock_resume = Mock()
         mock_resume.id = "test-123"
         mock_resume.meta = {"processing_status": "success"}
@@ -135,3 +135,101 @@ class BatchProcessorTestCase(TestCase):
         
         # Check that top candidate is included
         self.assertIn("test-123", summary['top_candidates']) 
+
+    def test_experience_parsing_filters_training(self):
+        """Ensure seminars and trainings are not promoted to experience entries."""
+        self.processor.pdf_parser.extract_plain_text = lambda *_: "mock text"
+        structured_data = {
+            'sections': [
+                {
+                    'header': 'Professional Experience',
+                    'content': [
+                        'Software Engineer at Tech Corp | Jan 2018 - Mar 2022',
+                        'Built scalable systems in Python and AWS.'
+                    ]
+                },
+                {
+                    'header': 'Professional Experience',
+                    'content': [
+                        'Role Based Access Control',
+                        'EADevOps team collaboration',
+                        'Jenkins job creation process'
+                    ]
+                },
+                {
+                    'header': 'Education',
+                    'content': [
+                        'University of Somewhere',
+                        'Bachelor of Science in Computer Science',
+                        '2014 - 2018',
+                        'Net 25 Studio Tour - 2015'
+                    ]
+                }
+            ],
+            'meta': {'parsing_ok': True},
+            'layout_metadata': {'text_elements': [{'text': 'Software Engineer experience'}]}
+        }
+
+        parsed = self.processor._extract_parsed_data(structured_data)
+
+        experience_entries = parsed.get('experience', [])
+        self.assertEqual(len(experience_entries), 1, experience_entries)
+        self.assertTrue(
+            experience_entries[0]['title'].lower().startswith('software engineer'),
+            experience_entries
+        )
+        self.assertNotIn('Role Based Access Control', experience_entries[0]['title'])
+
+        education_entries = parsed.get('education', [])
+        self.assertEqual(len(education_entries), 1, education_entries)
+        education_entry = education_entries[0]
+        self.assertIn('University of Somewhere', education_entry.get('school', ''))
+        self.assertIn('Bachelor of Science', education_entry.get('degree', ''))
+        self.assertNotIn('Net 25 Studio Tour', education_entry.get('description', ''))
+
+        misc_text = parsed.get('misc', '')
+        self.assertIn('Role Based Access Control', misc_text)
+        self.assertIn('Net 25 Studio Tour', misc_text)
+
+    def test_analysis_added_to_resume_output(self):
+        """Mirror analysis content at the top level of resume output."""
+        resume_scores = ResumeScores(0.1, 0.2, 0.3, final_score=0.6, final_score_display=60.0)
+        parsed_stub = {
+            'experience': [],
+            'skills': [],
+            'education': [],
+            'misc': '',
+            'metadata': {'parsing_ok': True}
+        }
+        resume = ParsedResume(
+            id='candidate-1',
+            sections={'experience': '', 'skills': '', 'education': '', 'misc': ''},
+            meta={},
+            scores=resume_scores,
+            matched_skills=[],
+            parsed=parsed_stub
+        )
+
+        analysis_payload = {
+            'text': 'Strong match with key skills.',
+            'bullets': ['Aligned with Python requirements.'],
+            'facts': {'coverage_pct': 89},
+            'metadata': {'quality': 'high'}
+        }
+
+        with patch('resume_processor.batch_processor.generate_candidate_analysis_enhanced', return_value=analysis_payload):
+            output = self.processor._assemble_output(
+                [resume],
+                [{'id': resume.id, 'rank': 1}],
+                'Sample JD text',
+                {'position_title': 'Software Engineer'}
+            )
+
+        self.assertIn('resumes', output)
+        self.assertEqual(len(output['resumes']), 1)
+        resume_output = output['resumes'][0]
+        self.assertIn('analysis', resume_output)
+        self.assertEqual(resume_output['analysis']['text'], analysis_payload['text'])
+        self.assertEqual(resume_output['analysis']['bullets'], analysis_payload['bullets'])
+        self.assertEqual(resume_output['analysis']['facts'], analysis_payload['facts'])
+        self.assertEqual(resume_output['scores']['analysis_text'], analysis_payload['text'])

@@ -17,6 +17,23 @@ import math
 import time
 import contextlib
 from contextlib import contextmanager
+import warnings
+
+# Suppress harmless pdfminer warnings about color spaces (e.g., named patterns like 'P1', 'P2')
+# These occur when PDFs have pattern color spaces that pdfminer doesn't fully understand
+warnings.filterwarnings(
+    'ignore',
+    message=r".*Cannot set .* color because.*invalid float value.*",
+    category=UserWarning
+)
+
+# Suppress pdfminer/pdfplumber logging warnings (color space issues, etc.)
+# These are harmless but clutter the logs
+for _logger_name in ['pdfminer', 'pdfminer.pdfpage', 'pdfminer.converter', 
+                      'pdfminer.pdfinterp', 'pdfminer.cmapdb', 'pdfminer.psparser',
+                      'pdfminer.pdfparser', 'pdfminer.pdfdocument', 'pdfminer.pdfcolor',
+                      'pdfplumber']:
+    logging.getLogger(_logger_name).setLevel(logging.ERROR)
 
 # Optional fast PDF text extraction
 try:
@@ -25,6 +42,39 @@ except Exception:
     fitz = None
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_log_str(text: str, max_len: int = 50) -> str:
+    """Sanitize a string for safe logging on Windows console (cp1252).
+    
+    Removes or replaces Unicode characters that can't be encoded in cp1252.
+    """
+    if not text:
+        return ""
+    # Replace common problematic characters
+    replacements = {
+        '\u202d': '',  # Left-to-Right Override
+        '\u202c': '',  # Pop Directional Formatting
+        '\u25cf': '*',  # Black Circle (bullet)
+        '\u2022': '*',  # Bullet
+        '\u2013': '-',  # En Dash
+        '\u2014': '-',  # Em Dash
+        '\u2018': "'",  # Left Single Quote
+        '\u2019': "'",  # Right Single Quote
+        '\u201c': '"',  # Left Double Quote
+        '\u201d': '"',  # Right Double Quote
+        '\u2026': '...',  # Ellipsis
+        '\x11': ' ',   # Device Control 1
+    }
+    result = text
+    for char, replacement in replacements.items():
+        result = result.replace(char, replacement)
+    # Remove any remaining non-ASCII characters
+    result = result.encode('ascii', 'replace').decode('ascii')
+    # Truncate if needed
+    if max_len and len(result) > max_len:
+        result = result[:max_len] + '...'
+    return result
 
 
 def preprocess_text(text: str) -> str:
@@ -378,6 +428,7 @@ class PDFParser:
 
         # Try pymupdf4llm first if configured
         extraction_method = None
+        page_widths = {}  # Initialize for column detection
         if PARSER_BACKEND == "pymupdf4llm" and PYMUPDF4LLM_AVAILABLE:
             logger.info("[PARSER] Attempting pymupdf4llm extraction")
             extraction_method = "pymupdf4llm"
@@ -389,6 +440,15 @@ class PDFParser:
                 # Use markdown lines directly for better section detection
                 pages_total = len(set(te.get('page', 0) for te in text_elements))
                 pages_processed = min(pages_total, MAX_PAGES)
+                # Get page widths from fitz for column detection
+                if fitz is not None:
+                    try:
+                        doc = fitz.open(pdf_file_path)
+                        for page_num, page in enumerate(doc[:MAX_PAGES]):
+                            page_widths[page_num] = float(page.rect.width)
+                        doc.close()
+                    except Exception:
+                        pass
             else:
                 logger.warning("[PARSER] pymupdf4llm returned no elements, falling back to fitz/pdfplumber")
                 extraction_method = "fitz_fallback"
@@ -398,15 +458,17 @@ class PDFParser:
                     pages_processed = min(pages_total, MAX_PAGES)
                     
                     with time_phase("extract_fast", timing_bucket):
-                        text_elements = self._extract_text_fast(pdf_file_path)
+                        fast_result = self._extract_text_fast(pdf_file_path)
                     
-                    if not text_elements:
+                    if not fast_result:
                         logger.info("[PARSER] fitz fast path returned no elements, using pdfplumber")
                         extraction_method = "pdfplumber"
+                        page_widths = {}
                         with time_phase("extract_pdfplumber", timing_bucket):
                             text_elements = self._extract_text_with_layout(pdf)
                     else:
-                        logger.info(f"[PARSER] fitz fast path extracted {len(text_elements)} text elements")
+                        text_elements, page_widths = fast_result
+                        extraction_method = "fitz"
                     
                     all_lines_markdown = None
         else:
@@ -417,18 +479,22 @@ class PDFParser:
                 pages_total = len(pdf.pages)
                 pages_processed = min(pages_total, MAX_PAGES)
                 
+                # Capture page widths from pdfplumber for column detection
+                for page_num, page in enumerate(pdf.pages[:MAX_PAGES]):
+                    page_widths[page_num] = float(page.width)
+                
                 # Extract text with layout metadata (prefer PyMuPDF when available)
                 with time_phase("extract_fast", timing_bucket):
-                    text_elements = self._extract_text_fast(pdf_file_path)
+                    fast_result = self._extract_text_fast(pdf_file_path)
                 
-                if not text_elements:
+                if not fast_result:
                     logger.info("[PARSER] fitz fast path returned no elements, using pdfplumber")
                     extraction_method = "pdfplumber"
                     with time_phase("extract_pdfplumber", timing_bucket):
                         text_elements = self._extract_text_with_layout(pdf)
                 else:
+                    text_elements, page_widths = fast_result
                     extraction_method = "fitz"
-                    logger.info(f"[PARSER] fitz fast path extracted {len(text_elements)} text elements")
                 
                 all_lines_markdown = None
         
@@ -438,11 +504,53 @@ class PDFParser:
             logger.error("[PARSER] No text elements extracted from PDF")
             return structured_data
         
+        # Check if extracted text is too short (likely image-based PDF)
+        total_chars = sum(len(te.get('text', '')) for te in text_elements)
+        MIN_CHARS_THRESHOLD = 200  # If less than 200 chars, try OCR
+        
+        if total_chars < MIN_CHARS_THRESHOLD and OCR_ALLOWED and not self.disable_ocr:
+            logger.warning(f"[PARSER] Only {total_chars} chars extracted, attempting OCR fallback")
+            try:
+                with pdfplumber.open(pdf_file_path) as pdf:
+                    ocr_text_elements = []
+                    for page_num, page in enumerate(pdf.pages[:MAX_PAGES]):
+                        ocr_text = self._ocr_page(page)
+                        if ocr_text:
+                            for line_num, line in enumerate(ocr_text.split('\n')):
+                                if line.strip():
+                                    ocr_text_elements.append({
+                                        'text': line.strip(),
+                                        'page': page_num,
+                                        'y': float(line_num * 12),  # Approximate y position
+                                        'x': 0.0,
+                                        'font_size': 12.0,
+                                        'font_name': 'ocr',
+                                        'is_bold': False,
+                                        'is_italic': False
+                                    })
+                    
+                    ocr_chars = sum(len(te.get('text', '')) for te in ocr_text_elements)
+                    if ocr_chars > total_chars:
+                        logger.info(f"[PARSER] OCR improved extraction: {ocr_chars} chars (was {total_chars})")
+                        text_elements = ocr_text_elements
+                        extraction_method = "ocr_fallback"
+                    else:
+                        logger.info(f"[PARSER] OCR did not improve extraction, keeping original")
+            except Exception as e:
+                logger.error(f"[PARSER] OCR fallback failed: {e}")
+        
         # Log extraction results and font info availability
         logger.info(f"[PARSER] Extraction method: {extraction_method or 'unknown'}, extracted {len(text_elements)} text elements")
         font_info_available = sum(1 for te in text_elements[:10] if te.get('font_size') and te.get('font_size') != 12) > 0
         bold_info_available = any(te.get('is_bold') for te in text_elements[:10])
         logger.info(f"[PARSER] Font info available: font_size={font_info_available}, is_bold={bold_info_available}")
+        
+        # Column detection and reordering for two-column layouts
+        # CRITICAL: This ensures each column is read top-to-bottom before moving to next column
+        if text_elements:
+            text_elements = self._detect_and_group_by_columns(text_elements, page_widths)
+            logger.info(f"[PARSER] After column detection: {len(text_elements)} text elements")
+        
         if text_elements:
             sample_elements = text_elements[:3]
             for i, te in enumerate(sample_elements):
@@ -510,24 +618,136 @@ class PDFParser:
             sections = self._final_quality_check(sections)
 
         sections, canonical_sections = self._tag_sections_with_canonical_labels(sections)
-        structured_data['sections'] = sections
-        structured_data['canonical_sections'] = canonical_sections
+        
+        # Debug: Log Experience section length
+        experience_text = canonical_sections.get('experience', '')
+        education_text = canonical_sections.get('education', '')
+        misc_text = canonical_sections.get('misc', '')
+        logger.info(f"[PARSER] Experience section length: {len(experience_text)} characters")
+        logger.info(f"[PARSER] Education section length: {len(education_text)} characters")
+        logger.info(f"[PARSER] Misc section length: {len(misc_text)} characters")
+        
+        # BUCKET LEAK DETECTION: Experience empty but Education/Misc bloated
+        bucket_leak_detected = False
+        bloated_section = None
+        
+        if len(experience_text.strip()) < 100:
+            if len(education_text) > 2000:
+                bucket_leak_detected = True
+                bloated_section = 'education'
+                logger.warning(f"[BUCKET_LEAK_PARSER] Detected: Experience={len(experience_text)} chars, Education={len(education_text)} chars")
+            elif len(misc_text) > 2000:
+                bucket_leak_detected = True
+                bloated_section = 'misc'
+                logger.warning(f"[BUCKET_LEAK_PARSER] Detected: Experience={len(experience_text)} chars, Misc={len(misc_text)} chars")
+        
+        if bucket_leak_detected and bloated_section:
+            logger.warning(f"[BUCKET_LEAK_PARSER] Attempting to re-split {bloated_section} section")
+            
+            # Find the bloated section and try to resplit it
+            new_sections = []
+            new_canonical_sections = dict(canonical_sections)
+            
+            for section in sections:
+                if section.get('canonical') == bloated_section:
+                    content = section.get('content', [])
+                    if content:
+                        # Try to re-split this bloated section
+                        resplit_result = self._resplit_bloated_section(content, bloated_section)
+                        
+                        if len(resplit_result) > 1:
+                            logger.info(f"[BUCKET_LEAK_PARSER] Successfully re-split {bloated_section} into {len(resplit_result)} sections")
+                            
+                            for resplit in resplit_result:
+                                resplit_header = resplit.get('header', '').lower()
+                                resplit_content = resplit.get('content', [])
+                                resplit_text = ' '.join(str(c) for c in resplit_content)
+                                
+                                # Determine canonical based on header
+                                if 'experience' in resplit_header or 'work' in resplit_header or 'employment' in resplit_header:
+                                    resplit_canonical = 'experience'
+                                elif 'education' in resplit_header or 'academic' in resplit_header:
+                                    resplit_canonical = 'education'
+                                else:
+                                    resplit_canonical = bloated_section
+                                
+                                new_sections.append({
+                                    'header': resplit.get('header', ''),
+                                    'content': resplit_content,
+                                    'canonical': resplit_canonical
+                                })
+                                
+                                # Update canonical sections
+                                if resplit_canonical in new_canonical_sections:
+                                    new_canonical_sections[resplit_canonical] = (
+                                        new_canonical_sections.get(resplit_canonical, '') + ' ' + resplit_text
+                                    ).strip()
+                                else:
+                                    new_canonical_sections[resplit_canonical] = resplit_text
+                        else:
+                            # Resplit didn't work, keep original
+                            new_sections.append(section)
+                    else:
+                        new_sections.append(section)
+                else:
+                    new_sections.append(section)
+            
+            # Check if resplit helped
+            new_experience = new_canonical_sections.get('experience', '')
+            if len(new_experience.strip()) > len(experience_text.strip()):
+                logger.info(f"[BUCKET_LEAK_PARSER] Resplit successful! Experience now has {len(new_experience)} chars (was {len(experience_text)})")
+                sections = new_sections
+                canonical_sections = new_canonical_sections
+            else:
+                logger.warning("[BUCKET_LEAK_PARSER] Resplit did not improve Experience section, keeping original")
+        
+        # Fallback: If still empty after resplit attempt, use combined section
+        experience_text = canonical_sections.get('experience', '')
+        if len(experience_text.strip()) == 0:
+            logger.warning(f"[PARSER] Experience still empty after resplit attempts")
+            logger.warning("[PARSER] Attempting final fallback: re-reading entire raw text as Combined Section")
+            
+            # Re-read entire raw text without splitting
+            all_raw_text = ' '.join([elem.get('text', '') for elem in text_elements if elem.get('text', '').strip()])
+            
+            if all_raw_text.strip():
+                # Create a single "Combined Section" with all content
+                structured_data['sections'] = [{
+                    'header': 'Combined Section',
+                    'content': [all_raw_text],
+                    'canonical': 'misc'
+                }]
+                structured_data['canonical_sections'] = {
+                    'misc': all_raw_text,
+                    'experience': all_raw_text,  # Also put in experience for scoring
+                    'education': canonical_sections.get('education', all_raw_text)
+                }
+                logger.info(f"[PARSER] Final fallback applied: Created Combined Section with {len(all_raw_text)} characters")
+            else:
+                # Even fallback failed - keep original sections
+                logger.error("[PARSER] Fallback failed: no raw text available")
+                structured_data['sections'] = sections
+                structured_data['canonical_sections'] = canonical_sections
+        else:
+            # Normal case: sections are populated
+            structured_data['sections'] = sections
+            structured_data['canonical_sections'] = canonical_sections
         
         # Log section detection results
-        logger.info(f"[PARSER] Final section count: {len(sections)}")
-        if sections:
-            section_headers = [s.get('header', '') for s in sections[:5]]
+        logger.info(f"[PARSER] Final section count: {len(structured_data['sections'])}")
+        if structured_data['sections']:
+            section_headers = [_safe_log_str(s.get('header', ''), 40) for s in structured_data['sections'][:5]]
             logger.info(f"[PARSER] Section headers (first 5): {section_headers}")
-            for i, section in enumerate(sections[:5]):
+            for i, section in enumerate(structured_data['sections'][:5]):
                 content_len = sum(len(str(item)) for item in section.get('content', []))
                 canonical = section.get('canonical', 'unknown')
-                logger.info(f"[PARSER] Section {i}: header='{section.get('header', '')}', canonical='{canonical}', content_length={content_len}")
+                logger.info(f"[PARSER] Section {i}: header='{_safe_log_str(section.get('header', ''), 60)}', canonical='{canonical}', content_length={content_len}")
         else:
             logger.warning("[PARSER] No sections detected!")
         
-        if canonical_sections:
-            logger.info(f"[PARSER] Canonical sections present: {list(canonical_sections.keys())}")
-            for key, value in canonical_sections.items():
+        if structured_data.get('canonical_sections'):
+            logger.info(f"[PARSER] Canonical sections present: {list(structured_data['canonical_sections'].keys())}")
+            for key, value in structured_data['canonical_sections'].items():
                 logger.debug(f"[PARSER] Canonical '{key}': {len(value)} chars")
         else:
             logger.warning("[PARSER] No canonical_sections generated!")
@@ -592,16 +812,28 @@ class PDFParser:
                 
         return text_elements
 
-    def _extract_text_fast(self, pdf_file_path: str) -> Optional[List[Dict[str, Any]]]:
-        """Fast path: use PyMuPDF to extract text blocks with font information if available."""
+    def _extract_text_fast(self, pdf_file_path: str) -> Optional[Tuple[List[Dict[str, Any]], Dict[int, float]]]:
+        """Fast path: use PyMuPDF to extract text blocks with font information.
+        
+        IMPORTANT: Does NOT pre-sort elements by (y, x) to preserve layout information.
+        Column detection happens later and handles proper reading order.
+        
+        Returns:
+            Tuple of (text_elements, page_widths) or None if extraction fails.
+            page_widths maps page number to page width in points.
+        """
         if not (USE_PYMUPDF and fitz is not None):
             return None
         try:
             doc = fitz.open(pdf_file_path)
             text_elements: List[Dict[str, Any]] = []
+            page_widths: Dict[int, float] = {}
             font_info_available = False
             
             for page_num, page in enumerate(doc[:MAX_PAGES]):
+                # Store page width for column detection
+                page_widths[page_num] = float(page.rect.width)
+                
                 # Try to get text with font information using "dict" format
                 try:
                     text_dict = page.get_text("dict")
@@ -611,12 +843,14 @@ class PDFParser:
                             if block.get('type') == 0:  # Text block
                                 bbox = block.get('bbox', [0, 0, 0, 0])
                                 x0, y0, x1, y1 = bbox[0], bbox[1], bbox[2], bbox[3]
+                                block_width = x1 - x0
                                 
                                 # Extract text spans with font info
                                 for line in block.get('lines', []):
                                     line_bbox = line.get('bbox', [x0, y0, x1, y1])
                                     line_y = line_bbox[1]
                                     line_x = line_bbox[0]
+                                    line_width = line_bbox[2] - line_bbox[0]
                                     
                                     # Collect spans in this line
                                     line_text_parts = []
@@ -648,6 +882,7 @@ class PDFParser:
                                                 'page': page_num,
                                                 'y': float(line_y),
                                                 'x': float(line_x),
+                                                'width': float(line_width),  # Track element width
                                                 'font_size': line_font_size,
                                                 'font_name': 'unknown',
                                                 'is_bold': line_is_bold,
@@ -665,7 +900,8 @@ class PDFParser:
                     x0, y0, x1, y1, text = blk[0], blk[1], blk[2], blk[3], blk[4]
                     if not text or not str(text).strip():
                         continue
-                    # Normalize and split by lines, preserve (y,x) order later
+                    block_width = x1 - x0
+                    # Normalize and split by lines
                     norm = self._normalize_text(str(text))
                     for ln in norm.split('\n'):
                         if ln.strip():
@@ -674,23 +910,28 @@ class PDFParser:
                                 'page': page_num,
                                 'y': float(y0),
                                 'x': float(x0),
+                                'width': float(block_width),
                                 'font_size': 12,
                                 'font_name': 'unknown',
                                 'is_bold': False,
                                 'is_italic': False
                             })
             
-            # Sort to preserve two-column order (y, x)
-            text_elements.sort(key=lambda e: (e.get('y', 0), e.get('x', 0)))
+            doc.close()
+            
+            # NOTE: Do NOT sort here! Column detection will handle proper reading order.
+            # Sorting by (y, x) destroys two-column layouts by reading horizontally.
             
             if font_info_available:
                 logger.debug(f"[FONT_EXTRACT] Extracted font information for {len(text_elements)} elements")
             else:
                 logger.debug(f"[FONT_EXTRACT] No font information available, using defaults")
             
-            # Quick probe: if we have reasonable amount of text, skip slower path
+            logger.info(f"[PARSER] fitz fast path extracted {len(text_elements)} text elements")
+            
+            # Quick probe: if we have reasonable amount of text, return it
             if sum(len(te['text']) for te in text_elements) > 50:
-                return text_elements
+                return (text_elements, page_widths)
             return None
         except Exception as e:
             logger.debug(f"PyMuPDF fast extract failed: {e}")
@@ -1265,6 +1506,63 @@ class PDFParser:
             for key, values in aggregated_lists.items()
             if values
         }
+        
+        # FALLBACK: Check if Education has swallowed Experience
+        # If Experience is empty but Education is >2000 chars, try to re-split
+        experience_text = aggregated.get('experience', '')
+        education_text = aggregated.get('education', '')
+        
+        if len(experience_text.strip()) == 0 and len(education_text) > 2000:
+            logger.warning(f"[BUCKET_LEAK] Experience is empty but Education has {len(education_text)} chars - attempting re-split")
+            
+            # Find the Education section(s) and try to re-split
+            new_tagged_sections = []
+            new_aggregated_lists: Dict[str, List[str]] = {key: [] for key in CANONICAL_SECTION_PRIORITY}
+            
+            for section in tagged_sections:
+                if section.get('canonical') == 'education':
+                    content = section.get('content', [])
+                    if content:
+                        # Try to re-split this bloated section
+                        resplit_sections = self._resplit_bloated_section(content, 'education')
+                        
+                        for resplit in resplit_sections:
+                            resplit_header = resplit.get('header', '')
+                            resplit_content = resplit.get('content', [])
+                            resplit_canonical = self._canonicalize_header(resplit_header, resplit_content)
+                            
+                            # Override canonical if header explicitly says Experience/Education
+                            if 'experience' in resplit_header.lower():
+                                resplit_canonical = 'experience'
+                            elif 'education' in resplit_header.lower():
+                                resplit_canonical = 'education'
+                            
+                            enriched_resplit = dict(resplit)
+                            enriched_resplit['canonical'] = resplit_canonical
+                            new_tagged_sections.append(enriched_resplit)
+                            
+                            if resplit_content:
+                                new_aggregated_lists.setdefault(resplit_canonical, []).extend(resplit_content)
+                else:
+                    new_tagged_sections.append(section)
+                    canonical = section.get('canonical', 'misc')
+                    content = section.get('content', [])
+                    if content:
+                        new_aggregated_lists.setdefault(canonical, []).extend(content)
+            
+            # Check if re-split was successful
+            new_experience = ' '.join(new_aggregated_lists.get('experience', []))
+            if len(new_experience.strip()) > 0:
+                logger.info(f"[BUCKET_LEAK] Re-split successful! Experience now has {len(new_experience)} chars")
+                tagged_sections = new_tagged_sections
+                aggregated = {
+                    key: ' '.join(values).strip()
+                    for key, values in new_aggregated_lists.items()
+                    if values
+                }
+            else:
+                logger.warning("[BUCKET_LEAK] Re-split did not recover Experience content")
+        
         return tagged_sections, aggregated
 
     def _enforce_core_sections(self, sections: List[Dict[str, Any]], lines: List[str]) -> List[Dict[str, Any]]:
@@ -1412,12 +1710,19 @@ class PDFParser:
         return False
 
     def _normalize_lines(self, lines: List[str]) -> List[str]:
-        """Normalization: NFKC, fix ligatures, de-hyphen at line breaks, unify bullets."""
+        """Normalization: NFKC, fix ligatures, de-hyphen at line breaks, unify bullets, split inline headers."""
         normed: List[str] = []
         for ln in lines[:]:
             t = self._normalize_text(ln)
             if t:
-                normed.append(t)
+                # Handle case where normalize_text inserted newlines (for inline headers)
+                if '\n' in t:
+                    for sub_line in t.split('\n'):
+                        sub_line = sub_line.strip()
+                        if sub_line:
+                            normed.append(sub_line)
+                else:
+                    normed.append(t)
         return normed
 
     def _normalize_text(self, text: str) -> str:
@@ -1425,6 +1730,35 @@ class PDFParser:
         # Ligatures
         t = (t.replace('ﬁ', 'fi').replace('ﬂ', 'fl').replace('ﬀ', 'ff')
                .replace('ﬃ', 'ffi').replace('ﬄ', 'ffl'))
+        # Fix spaced headers: "E X P E R I E N C E" -> "EXPERIENCE"
+        # Pattern: 3+ uppercase letters separated by spaces
+        spaced_header_pattern = r'\b([A-Z]\s){3,}[A-Z]\b'
+        def fix_spaced_header(match):
+            spaced_text = match.group(0)
+            # Remove spaces between letters
+            fixed = re.sub(r'\s+', '', spaced_text)
+            return fixed
+        t = re.sub(spaced_header_pattern, fix_spaced_header, t)
+        
+        # FIX: Split inline section headers that appear mid-line (from two-column layouts)
+        # These patterns detect when a section header is embedded in content
+        inline_header_patterns = [
+            # "...text EXPERIENCE Job Title..."
+            (r'(\S)\s+(EXPERIENCE|WORK EXPERIENCE|PROFESSIONAL EXPERIENCE)\s+([A-Z])', r'\1\n\2\n\3'),
+            # "...text EDUCATION University..."
+            (r'(\S)\s+(EDUCATION|ACADEMIC BACKGROUND|QUALIFICATIONS)\s+([A-Z])', r'\1\n\2\n\3'),
+            # "...text SKILLS Programming..."
+            (r'(\S)\s+(SKILLS|TECHNICAL SKILLS|CORE COMPETENCIES)\s+([A-Z])', r'\1\n\2\n\3'),
+            # "...text PROJECTS Project Name..."
+            (r'(\S)\s+(PROJECTS|PROJECT EXPERIENCE|PROJECTS & PUBLICATIONS)\s+([A-Z])', r'\1\n\2\n\3'),
+            # "...text CERTIFICATIONS AWS..."
+            (r'(\S)\s+(CERTIFICATIONS|CERTIFICATES|LICENSES)\s+([A-Z])', r'\1\n\2\n\3'),
+        ]
+        for pattern, replacement in inline_header_patterns:
+            if re.search(pattern, t, re.IGNORECASE):
+                t = re.sub(pattern, replacement, t, flags=re.IGNORECASE)
+                logger.debug(f"[INLINE_HEADER_SPLIT] Split inline header in: {t[:80]}...")
+        
         # De-hyphenation across line breaks (best effort when provided raw blocks)
         t = re.sub(r'-\s*\n\s*', '', t)
         # Unify bullets
@@ -1508,7 +1842,7 @@ class PDFParser:
         if candidates:
             top_candidates = sorted(candidates, key=lambda x: x[2], reverse=True)[:5]
             for idx, text, score, feat in top_candidates:
-                logger.info(f"[SECTION_DETECT] Top candidate: line {idx}, text='{text[:50]}', score={score:.3f}, font_size={feat.get('font_size', 'N/A')}")
+                logger.info(f"[SECTION_DETECT] Top candidate: line {idx}, text='{_safe_log_str(text)}', score={score:.3f}, font_size={feat.get('font_size', 'N/A')}")
         
         # If no clear headers found, try harder to find inline headers
         if not candidates:
@@ -1727,26 +2061,46 @@ class PDFParser:
         return sections
 
     def _split_by_keywords(self, lines: List[str]) -> List[Dict[str, Any]]:
-        """Split content by looking for common section keywords."""
+        """Split content by looking for common section keywords.
+        
+        FIX: Aggressive header detection and strict "stop" logic to prevent
+        one section from swallowing another (e.g., Education eating Experience).
+        """
         sections: List[Dict[str, Any]] = []
         current_section: Optional[str] = None
         current_content: List[str] = []
         
-        # Expanded keywords that strongly indicate section starts
+        # Expanded keywords with AGGRESSIVE Experience detection (case-insensitive)
+        # Order matters: Experience patterns checked first to prevent Education from swallowing it
         section_keywords = {
-            'experience': ['experience', 'work experience', 'employment', 'professional experience', 'career', 
-                          'work history', 'employment history', 'professional background', 'career history',
-                          'positions', 'roles', 'work'],
-            'skills': ['skills', 'technical skills', 'competencies', 'expertise', 'proficiencies', 
-                      'technologies', 'tools', 'tech stack', 'technical proficiencies', 'capabilities',
-                      'programming languages', 'software', 'platforms'],
-            'education': ['education', 'academic', 'qualifications', 'university', 'college', 'degree',
-                         'educational background', 'academic background', 'academic qualifications',
-                         'bachelor', 'master', 'phd', 'doctorate', 'diploma', 'certification'],
+            'experience': [
+                'experience', 'work experience', 'professional experience', 'employment',
+                'employment history', 'work history', 'career history', 'career',
+                'professional background', 'positions held', 'roles', 'work',
+                'job history', 'relevant experience', 'professional history',
+                'industry experience', 'history'  # "History" as standalone header
+            ],
+            'skills': [
+                'skills', 'technical skills', 'competencies', 'expertise', 'proficiencies', 
+                'technologies', 'tools', 'tech stack', 'technical proficiencies', 'capabilities',
+                'programming languages', 'software', 'platforms', 'core competencies'
+            ],
+            'education': [
+                'education', 'academic background', 'academic qualifications',
+                'educational background', 'academic', 'qualifications'
+                # Removed 'university', 'college', 'bachelor', 'master' to avoid false positives
+            ],
             'projects': ['projects', 'project experience', 'portfolio', 'key projects', 'notable projects'],
             'certifications': ['certifications', 'certificates', 'licenses', 'accreditations', 'credentials'],
             'awards': ['awards', 'honors', 'achievements', 'recognition', 'accomplishments', 'distinctions']
         }
+        
+        # Compile regex patterns for each section (case-insensitive)
+        section_patterns = {}
+        for section_name, keywords in section_keywords.items():
+            # Create pattern that matches any keyword as whole word
+            patterns = [r'\b' + re.escape(kw) + r'\b' for kw in keywords]
+            section_patterns[section_name] = re.compile('|'.join(patterns), re.IGNORECASE)
         
         def flush():
             if current_section and current_content:
@@ -1755,43 +2109,59 @@ class PDFParser:
                     'content': current_content.copy()
                 })
         
+        def detect_section_header(line_text: str) -> Optional[str]:
+            """Detect if a line is a section header. Returns section name or None."""
+            line_stripped = line_text.strip()
+            if not line_stripped:
+                return None
+            
+            line_lower = line_stripped.lower()
+            
+            # Skip if line is too long (likely content, not header)
+            if len(line_stripped) > 60 and not line_stripped.endswith(':'):
+                return None
+            
+            # Check each section pattern (order: experience first to catch it before education)
+            section_order = ['experience', 'skills', 'education', 'projects', 'certifications', 'awards']
+            for section_name in section_order:
+                pattern = section_patterns[section_name]
+                
+                # Exact match (whole line is just the keyword)
+                for keyword in section_keywords[section_name]:
+                    if line_lower == keyword or line_lower == keyword + ':':
+                        return section_name
+                
+                # Line starts with keyword + colon or is short enough to be a header
+                if pattern.search(line_stripped):
+                    # Short lines are likely headers
+                    if len(line_stripped) <= 40:
+                        return section_name
+                    # Lines ending with colon are likely headers
+                    if line_stripped.endswith(':'):
+                        return section_name
+                    # Lines that are ALL CAPS or Title Case with keyword
+                    if line_stripped.isupper() or line_stripped.istitle():
+                        return section_name
+            
+            return None
+        
         for line in lines:
             line_stripped = line.strip()
             if not line_stripped:
                 if current_content:
                     current_content.append(line)
                 continue
-                
-            line_lower = line_stripped.lower()
-            found_section = None
             
-            # Check if line contains a section keyword - more flexible matching
-            for section_name, keywords in section_keywords.items():
-                for keyword in keywords:
-                    keyword_lower = keyword.lower()
-                    # Exact match
-                    if keyword_lower == line_lower:
-                        found_section = section_name
-                        break
-                    # Starts with keyword + colon or space
-                    if line_lower.startswith(keyword_lower + ':') or line_lower.startswith(keyword_lower + ' '):
-                        found_section = section_name
-                        break
-                    # Contains keyword as whole word (for compound phrases)
-                    if re.search(r'\b' + re.escape(keyword_lower) + r'\b', line_lower):
-                        # Accept if line is reasonably short (not buried in content)
-                        if len(line_stripped) <= 80:
-                            # Prefer shorter lines
-                            if len(line_stripped) <= 50 or line_stripped.endswith(':'):
-                                found_section = section_name
-                                break
-                if found_section:
-                    break
+            # STRICT STOP LOGIC: Always check for new section header
+            # This ensures we don't let one section swallow another
+            found_section = detect_section_header(line_stripped)
             
             if found_section:
+                # Close current section and start new one
                 flush()
                 current_section = found_section
                 current_content = []
+                logger.debug(f"[SPLIT_KEYWORDS] Found header '{line_stripped}' -> section '{found_section}'")
             else:
                 if current_section is None:
                     current_section = 'Resume Content'
@@ -1799,6 +2169,246 @@ class PDFParser:
         
         flush()
         return sections
+    
+    def _resplit_bloated_section(self, section_content: List[str], section_name: str) -> List[Dict[str, Any]]:
+        """Re-split a bloated section that may have swallowed other sections.
+        
+        Used when Education section is >2000 chars but Experience is empty.
+        Looks for date ranges, Experience keywords, and job titles to split the content.
+        """
+        if not section_content:
+            return []
+        
+        # Join content for analysis
+        full_text = ' '.join(section_content)
+        
+        # Patterns that indicate Experience content
+        experience_patterns = [
+            r'\bwork(?:ed|ing)?\s+(?:at|for|with)\b',  # "worked at", "working for"
+            r'\b(?:19|20)\d{2}\s*[-–—]\s*(?:19|20)\d{2}|present|current\b',  # Date ranges
+            r'\b(?:senior|junior|lead|staff|principal)?\s*(?:software|web|mobile|data|full[- ]?stack)?\s*(?:engineer|developer|architect|analyst|manager|director)\b',
+            r'\b(?:responsible for|managed|developed|designed|implemented|built|created|led)\b',
+            r'\bexperience\b',
+            r'\bemployment\b',
+            r'\bhistory\b'
+        ]
+        
+        # Check if content looks like it contains Experience data
+        has_experience_content = any(
+            re.search(pattern, full_text, re.IGNORECASE) 
+            for pattern in experience_patterns
+        )
+        
+        if not has_experience_content:
+            # No experience content found, return as-is
+            return [{'header': section_name.title(), 'content': section_content}]
+        
+        logger.info(f"[RESPLIT] Attempting to re-split bloated {section_name} section ({len(full_text)} chars)")
+        
+        # Try to find where Experience section should start
+        # Look for lines that look like Experience headers or job entries
+        new_sections: List[Dict[str, Any]] = []
+        current_section = section_name
+        current_content: List[str] = []
+        
+        # EXPANDED: More experience header patterns including spaced versions
+        experience_header_patterns = [
+            r'^(?:work\s+)?experience\s*:?\s*$',
+            r'^professional\s+experience\s*:?\s*$',
+            r'^employment\s+(?:history)?\s*:?\s*$',
+            r'^work\s+history\s*:?\s*$',
+            r'^career\s+(?:history)?\s*:?\s*$',
+            r'^(?:relevant\s+)?experience\s*:?\s*$',
+            # Spaced versions: "E X P E R I E N C E"
+            r'^e\s*x\s*p\s*e\s*r\s*i\s*e\s*n\s*c\s*e\s*:?\s*$',
+            r'^w\s*o\s*r\s*k\s*:?\s*$',
+            # ALL CAPS versions
+            r'^EXPERIENCE\s*:?\s*$',
+            r'^WORK\s+EXPERIENCE\s*:?\s*$',
+            r'^PROFESSIONAL\s+EXPERIENCE\s*:?\s*$',
+            r'^EMPLOYMENT\s*:?\s*$',
+        ]
+        experience_header_re = re.compile('|'.join(experience_header_patterns), re.IGNORECASE)
+        
+        # Pattern to detect job title + company lines (common experience entry format)
+        job_entry_pattern = re.compile(
+            r'^(?:'
+            # Job Title at/| Company
+            r'(?:(?:senior|junior|lead|staff|principal|associate|assistant)?\s*)?'
+            r'(?:software|web|mobile|data|full[- ]?stack|frontend|backend|devops|cloud|systems?)?\s*'
+            r'(?:engineer|developer|architect|analyst|manager|director|specialist|consultant|designer|scientist|administrator)\s*'
+            r'(?:[@|,\-–—]\s*[A-Z][A-Za-z\s&.,]+)?'
+            r'|'
+            # Company Name | Job Title format
+            r'[A-Z][A-Za-z\s&.,]+\s*[@|,\-–—]\s*'
+            r'(?:(?:senior|junior|lead|staff|principal|associate|assistant)?\s*)?'
+            r'(?:software|web|mobile|data|full[- ]?stack|frontend|backend|devops|cloud|systems?)?\s*'
+            r'(?:engineer|developer|architect|analyst|manager|director|specialist|consultant|designer|scientist|administrator)'
+            r')',
+            re.IGNORECASE
+        )
+        
+        found_experience_start = False
+        experience_start_index = None
+        
+        for i, line in enumerate(section_content):
+            line_stripped = line.strip()
+            
+            # Check if this line is an Experience header
+            if experience_header_re.match(line_stripped):
+                # Save current content
+                if current_content:
+                    new_sections.append({
+                        'header': current_section.title(),
+                        'content': current_content.copy()
+                    })
+                current_section = 'experience'
+                current_content = []
+                found_experience_start = True
+                experience_start_index = i
+                logger.info(f"[RESPLIT] Found embedded Experience header: '{line_stripped}'")
+            else:
+                current_content.append(line)
+        
+        # Save final section
+        if current_content:
+            new_sections.append({
+                'header': current_section.title(),
+                'content': current_content
+            })
+        
+        if len(new_sections) > 1:
+            logger.info(f"[RESPLIT] Successfully split into {len(new_sections)} sections")
+            return new_sections
+        
+        # Fallback 1: Try to split by job entry patterns (job title + company)
+        logger.info("[RESPLIT] Header-based split failed, trying job-entry detection")
+        
+        # Look for job titles that indicate start of experience content
+        job_title_patterns = [
+            r'\b(?:senior|junior|lead|staff|principal|associate)?\s*(?:software|web|mobile|data|full[- ]?stack|frontend|backend|devops|cloud|systems?)?\s*(?:engineer|developer|architect|analyst|manager|director|specialist|consultant|designer|scientist|administrator)\b',
+            r'\b(?:intern|internship)\b',
+            r'\b(?:CEO|CTO|CFO|COO|VP|President|Founder)\b',
+        ]
+        job_title_re = re.compile('|'.join(job_title_patterns), re.IGNORECASE)
+        
+        # Date patterns that appear in job entries
+        date_in_line_pattern = re.compile(
+            r'(?:'
+            r'(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*(?:\d{4}|\d{2})'  # "Jan 2020" or "Jan '20"
+            r'|\d{1,2}/\d{2,4}'  # "01/2020" or "01/20"
+            r'|\d{4}\s*[-–—]\s*(?:\d{4}|present|current|now)'  # "2020 - 2022"
+            r'|(?:present|current|now)\b'  # Just "Present" or "Current"
+            r')',
+            re.IGNORECASE
+        )
+        
+        split_index = None
+        
+        # First pass: Look for lines with both job title AND date (strongest signal)
+        for i, line in enumerate(section_content):
+            if i < 2:  # Skip first 2 lines (likely education header content)
+                continue
+            line_stripped = line.strip()
+            
+            has_job_title = job_title_re.search(line_stripped)
+            has_date = date_in_line_pattern.search(line_stripped)
+            
+            if has_job_title and has_date:
+                split_index = i
+                logger.info(f"[RESPLIT] Found job entry line (title+date) at index {i}: '{line_stripped[:60]}...'")
+                break
+        
+        # Second pass: Look for job title followed by date on next line
+        if split_index is None:
+            for i, line in enumerate(section_content):
+                if i < 2:
+                    continue
+                line_stripped = line.strip()
+                
+                if job_title_re.search(line_stripped):
+                    # Check if next line has a date or looks like a company name
+                    if i + 1 < len(section_content):
+                        next_line = section_content[i + 1].strip()
+                        if date_in_line_pattern.search(next_line):
+                            split_index = i
+                            logger.info(f"[RESPLIT] Found job title at index {i}, date on next line")
+                            break
+                        # Check for company patterns (Inc, LLC, Corp, Ltd)
+                        if re.search(r'\b(?:Inc|LLC|Corp|Ltd|Limited|Company|Co\.|Corporation)\b', next_line, re.IGNORECASE):
+                            split_index = i
+                            logger.info(f"[RESPLIT] Found job title at index {i}, company on next line")
+                            break
+        
+        # Third pass: Look for date ranges as standalone split points
+        if split_index is None:
+            date_pattern = re.compile(
+                r'(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*\d{4}\s*[-–—]\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)?[a-z]*\.?\s*(?:\d{4}|present|current|now)',
+                re.IGNORECASE
+            )
+            
+            for i, line in enumerate(section_content):
+                if i < 3:
+                    continue
+                if date_pattern.search(line.strip()):
+                    split_index = i
+                    logger.info(f"[RESPLIT] Found date range at index {i}")
+                    break
+        
+        if split_index:
+            education_content = section_content[:split_index]
+            experience_content = section_content[split_index:]
+            logger.info(f"[RESPLIT] Split at line {split_index}: Education={len(education_content)} lines, Experience={len(experience_content)} lines")
+            return [
+                {'header': 'Education', 'content': education_content},
+                {'header': 'Experience', 'content': experience_content}
+            ]
+        
+        # Last resort: If we detected job-related content but couldn't find a clean split,
+        # put most content in Experience (since we know it has experience data)
+        if has_experience_content:
+            # Check if education content is minimal (just degree + school at start)
+            education_lines = []
+            experience_lines = []
+            
+            # Look for education-specific content at the start
+            education_keywords = ['bachelor', 'master', 'phd', 'doctorate', 'degree', 'university', 'college', 'gpa', 'graduated']
+            found_experience_indicator = False
+            
+            for i, line in enumerate(section_content):
+                line_lower = line.strip().lower()
+                
+                if not found_experience_indicator:
+                    # Check if this looks like education content
+                    is_education_line = any(kw in line_lower for kw in education_keywords)
+                    # Check if this looks like start of experience
+                    is_experience_line = job_title_re.search(line) or date_in_line_pattern.search(line)
+                    
+                    if is_experience_line and i > 0:
+                        found_experience_indicator = True
+                        experience_lines.append(line)
+                    elif is_education_line or i < 3:
+                        education_lines.append(line)
+                    else:
+                        # Ambiguous - check context
+                        if len(education_lines) < 5:
+                            education_lines.append(line)
+                        else:
+                            found_experience_indicator = True
+                            experience_lines.append(line)
+                else:
+                    experience_lines.append(line)
+            
+            if experience_lines and len(experience_lines) > len(education_lines):
+                logger.info(f"[RESPLIT] Content-based split: Education={len(education_lines)} lines, Experience={len(experience_lines)} lines")
+                return [
+                    {'header': 'Education', 'content': education_lines},
+                    {'header': 'Experience', 'content': experience_lines}
+                ]
+        
+        # No split found, return original
+        logger.warning("[RESPLIT] Could not find split point, returning original section")
+        return [{'header': section_name.title(), 'content': section_content}]
 
     def _is_actual_section_header(self, line: str, line_index: int, all_lines: List[str]) -> bool:
         line_clean = (line or '').strip()
@@ -2352,25 +2962,42 @@ class PDFParser:
         }
 
     def _ocr_page(self, page) -> str:
-        """OCR fallback for image-based PDFs with performance optimizations."""
+        """OCR fallback for image-based PDFs with performance optimizations.
+        
+        Args:
+            page: A pdfplumber page object
+        """
         if not OCR_ALLOWED:
+            logger.debug("[OCR] Skipping OCR - OCR_ALLOWED is False")
+            return ""
+        
+        if self.disable_ocr:
+            logger.debug("[OCR] Skipping OCR - disable_ocr flag is set")
             return ""
             
         try:
-            # Check if page has readable text first
-            text = page.get_text()
+            # Check if page has readable text first (pdfplumber uses extract_text())
+            text = page.extract_text() or ""
             if len(text.strip()) >= 80:  # Skip OCR if page has readable text
-                logger.info(f"[PERF] Skipping OCR - page has readable text")
+                logger.info(f"[OCR] Skipping OCR - page has {len(text.strip())} chars of readable text")
                 return text
+            
+            logger.info(f"[OCR] Running OCR on page (only {len(text.strip())} chars extracted)")
             
             # Reduced resolution for speed
             pil_img = page.to_image(resolution=200).original
             # Tuned Tesseract flags for resume text
             config = "--oem 1 --psm 6 -c preserve_interword_spaces=1"
-            text = pytesseract.image_to_string(pil_img, config=config)
-            return text
+            ocr_text = pytesseract.image_to_string(pil_img, config=config)
+            
+            if ocr_text and len(ocr_text.strip()) > len(text.strip()):
+                logger.info(f"[OCR] OCR extracted {len(ocr_text.strip())} chars (vs {len(text.strip())} from text extraction)")
+                return ocr_text
+            else:
+                logger.info(f"[OCR] OCR did not improve extraction, using original text")
+                return text
         except Exception as e:
-            logger.error(f"OCR failed: {str(e)}")
+            logger.error(f"[OCR] OCR failed: {str(e)}")
             return ""
 
     @staticmethod
@@ -2391,6 +3018,167 @@ class PDFParser:
             json.dump(structured_data, json_file, indent=2, ensure_ascii=False)
             
         return json_file_path
+
+    def _find_column_boundary(self, xs_sorted: List[float], page_width: float = 612.0) -> Optional[float]:
+        """Find column boundary using adaptive gap detection.
+        
+        Uses multiple strategies:
+        1. Large gap detection (> 15% of page width)
+        2. Bimodal distribution detection (two clusters of x-coordinates)
+        3. Page center proximity check (columns typically divide near center)
+        
+        Args:
+            xs_sorted: Sorted list of unique x-coordinates
+            page_width: Width of the page in points (default 612 = letter size)
+            
+        Returns:
+            Midpoint of the gap if a column boundary is detected, None otherwise
+        """
+        if len(xs_sorted) < 4:  # Need enough elements for column detection
+            return None
+        
+        # Calculate gaps between consecutive x-coordinates
+        gaps = []
+        for i in range(len(xs_sorted) - 1):
+            gap = xs_sorted[i + 1] - xs_sorted[i]
+            gaps.append((gap, xs_sorted[i], xs_sorted[i + 1]))
+        
+        if not gaps:
+            return None
+        
+        # Find the largest gap
+        largest_gap, left_x, right_x = max(gaps, key=lambda x: x[0])
+        
+        # Adaptive threshold: 15% of page width OR 50 pixels, whichever is larger
+        # This works for both narrow and wide PDFs
+        adaptive_threshold = max(page_width * 0.15, 50.0)
+        
+        # The gap must also be in the "middle third" of the page to be a column boundary
+        # (not just a left margin or right margin gap)
+        gap_midpoint = (left_x + right_x) / 2.0
+        page_center = page_width / 2.0
+        center_tolerance = page_width * 0.35  # Allow columns to divide within 35% of center
+        
+        is_center_gap = abs(gap_midpoint - page_center) < center_tolerance
+        
+        if largest_gap > adaptive_threshold and is_center_gap:
+            boundary = gap_midpoint
+            logger.debug(f"[COLUMN_DETECT] Found column boundary at x={boundary:.1f} (gap={largest_gap:.1f}px, threshold={adaptive_threshold:.1f}px)")
+            return boundary
+        
+        # Fallback: Check for bimodal distribution using k-means style clustering
+        # If x-coords naturally cluster into two groups, that indicates columns
+        if len(xs_sorted) >= 6:
+            boundary = self._detect_bimodal_columns(xs_sorted, page_width)
+            if boundary:
+                return boundary
+        
+        return None
+    
+    def _detect_bimodal_columns(self, xs_sorted: List[float], page_width: float) -> Optional[float]:
+        """Detect two-column layout using bimodal clustering of x-coordinates.
+        
+        If x-coordinates cluster into two distinct groups (left and right halves),
+        returns the boundary between them.
+        """
+        # Simple 2-means clustering
+        left_half = [x for x in xs_sorted if x < page_width / 2]
+        right_half = [x for x in xs_sorted if x >= page_width / 2]
+        
+        # Need significant content in both halves
+        if len(left_half) < 3 or len(right_half) < 3:
+            return None
+        
+        # Calculate cluster centers
+        left_center = sum(left_half) / len(left_half)
+        right_center = sum(right_half) / len(right_half)
+        
+        # Check if clusters are well-separated (gap > 20% of page width)
+        cluster_gap = right_center - left_center
+        if cluster_gap > page_width * 0.20:
+            # Boundary is between the rightmost left element and leftmost right element
+            boundary = (max(left_half) + min(right_half)) / 2.0
+            logger.debug(f"[COLUMN_DETECT] Bimodal clustering found boundary at x={boundary:.1f} (cluster gap={cluster_gap:.1f}px)")
+            return boundary
+        
+        return None
+    
+    def _detect_and_group_by_columns(self, text_elements: List[Dict[str, Any]], page_widths: Optional[Dict[int, float]] = None) -> List[Dict[str, Any]]:
+        """Detect two-column layouts and reorder text elements to read columns vertically.
+        
+        CRITICAL for 2-column resumes: Reads each column top-to-bottom before moving
+        to the next column. This prevents horizontal line merging that destroys 
+        multi-column layouts.
+        
+        Args:
+            text_elements: List of text elements with 'x', 'y', 'page', 'text' keys
+            page_widths: Optional dict mapping page number to page width in points
+            
+        Returns:
+            Reordered list of text elements (left column fully, then right column)
+        """
+        if not text_elements:
+            return text_elements
+        
+        # Default page width (letter size = 612 points)
+        default_width = 612.0
+        if page_widths is None:
+            page_widths = {}
+        
+        # Group by page
+        by_page: Dict[int, List[Dict[str, Any]]] = {}
+        for elem in text_elements:
+            page = int(elem.get('page', 0))
+            by_page.setdefault(page, []).append(elem)
+        
+        reordered = []
+        for page in sorted(by_page.keys()):
+            elems = by_page[page]
+            
+            # Get page width (from metadata or estimate from max x-coordinate)
+            page_width = page_widths.get(page, default_width)
+            
+            # If no explicit page width, estimate from content
+            if page not in page_widths:
+                max_x = max((float(e.get('x', 0) or 0) + float(e.get('width', 100) or 100)) 
+                           for e in elems if e.get('x') is not None)
+                if max_x > 400:  # Reasonable page width detected
+                    page_width = max(max_x * 1.1, default_width)  # Add 10% margin
+            
+            # Extract x-coordinates for all elements
+            xs = [float(e.get('x', 0) or 0.0) for e in elems if e.get('x') is not None]
+            
+            if not xs:
+                # No x-coordinates available, sort by original order
+                reordered.extend(elems)
+                continue
+            
+            # Find column boundary using adaptive detection
+            xs_sorted = sorted(set(xs))
+            column_boundary = self._find_column_boundary(xs_sorted, page_width)
+            
+            if column_boundary:
+                # Two-column layout detected
+                left_col = [e for e in elems if float(e.get('x', 0) or 0.0) < column_boundary]
+                right_col = [e for e in elems if float(e.get('x', 0) or 0.0) >= column_boundary]
+                
+                # Sort each column by y (top to bottom), then by x for sub-line ordering
+                left_col.sort(key=lambda e: (float(e.get('y', 0) or 0.0), float(e.get('x', 0) or 0.0)))
+                right_col.sort(key=lambda e: (float(e.get('y', 0) or 0.0), float(e.get('x', 0) or 0.0)))
+                
+                # CRITICAL: Process left column FULLY before right column
+                # This ensures vertical reading order within each column
+                reordered.extend(left_col)
+                reordered.extend(right_col)
+                
+                logger.info(f"[COLUMN_DETECT] Page {page}: Two-column layout (boundary={column_boundary:.1f}px). Left: {len(left_col)}, Right: {len(right_col)} elements")
+            else:
+                # Single column - sort by y (top to bottom), then by x
+                elems.sort(key=lambda e: (float(e.get('y', 0) or 0.0), float(e.get('x', 0) or 0.0)))
+                reordered.extend(elems)
+                logger.debug(f"[COLUMN_DETECT] Page {page}: Single column layout")
+        
+        return reordered
 
     def extract_plain_text(self, structured_data: Dict[str, Any]) -> str:
         """Extract plain text from structured data."""

@@ -1,0 +1,117 @@
+{
+  "version": "2.0",
+  "score_tiers": {
+    "excellent": {
+      "threshold": 80,
+      "tone": "positive",
+      "focus": "strengths",
+      "gaps": "minor",
+      "adjectives": ["exceptional", "outstanding", "strong", "robust", "solid"],
+      "reinforcing_words": ["demonstrates", "shows", "exhibits", "displays"]
+    },
+    "strong": {
+      "threshold": 60,
+      "tone": "positive",
+      "focus": "balanced",
+      "gaps": "addressable",
+      "adjectives": ["good", "solid", "capable", "promising", "well-qualified"],
+      "reinforcing_words": ["presents", "offers", "brings", "provides"]
+    },
+    "moderate": {
+      "threshold": 40,
+      "tone": "neutral",
+      "focus": "potential",
+      "gaps": "significant",
+      "adjectives": ["moderate", "developing", "emerging", "potential", "adequate"],
+      "reinforcing_words": ["shows", "indicates", "suggests", "reveals"]
+    },
+    "weak": {
+      "threshold": 0,
+      "tone": "cautious",
+      "focus": "gaps",
+      "gaps": "major",
+      "adjectives": ["limited", "developing", "emerging", "potential", "basic"],
+      "reinforcing_words": ["shows", "indicates", "suggests", "reveals"]
+    }
+  },
+  "seniority_levels": {
+    "intern": {
+      "experience_range": [0, 1],
+      "tone_adjustment": "junior",
+      "emphasis": ["learning", "potential", "foundation", "growth"],
+      "leadership_keywords": ["assisted", "supported", "contributed"]
+    },
+    "junior": {
+      "experience_range": [1, 3],
+      "tone_adjustment": "junior",
+      "emphasis": ["foundation", "potential", "learning", "development"],
+      "leadership_keywords": ["collaborated", "participated", "contributed"]
+    },
+    "mid": {
+      "experience_range": [3, 6],
+      "tone_adjustment": "balanced",
+      "emphasis": ["experience", "skills", "capability", "growth"],
+      "leadership_keywords": ["led", "managed", "coordinated", "mentored"]
+    },
+    "senior": {
+      "experience_range": [6, 10],
+      "tone_adjustment": "senior",
+      "emphasis": ["expertise", "leadership", "architecture", "mentorship"],
+      "leadership_keywords": ["architected", "designed", "mentored", "led"]
+    },
+    "lead": {
+      "experience_range": [8, 15],
+      "tone_adjustment": "senior",
+      "emphasis": ["leadership", "strategy", "vision", "team building"],
+      "leadership_keywords": ["directed", "strategized", "built", "scaled"]
+    },
+    "staff": {
+      "experience_range": [10, 20],
+      "tone_adjustment": "senior",
+      "emphasis": ["expertise", "innovation", "thought leadership", "mentorship"],
+      "leadership_keywords": ["innovated", "pioneered", "established", "influenced"]
+    }
+  },
+  "context_weights": {
+    "technical_roles": {
+      "skills_weight": 0.4,
+      "experience_weight": 0.35,
+      "projects_weight": 0.15,
+      "education_weight": 0.1
+    },
+    "non_technical_roles": {
+      "skills_weight": 0.3,
+      "experience_weight": 0.4,
+      "projects_weight": 0.2,
+      "education_weight": 0.1
+    }
+  },
+  "confidence_thresholds": {
+    "high_confidence": 0.8,
+    "medium_confidence": 0.6,
+    "low_confidence": 0.4
+  },
+  "template_variants": {
+    "opening_sentences": 5,
+    "skills_phrases": 4,
+    "experience_phrases": 3,
+    "gap_analysis": 4,
+    "transitions": 6
+  },
+  "special_achievements": {
+    "leadership_threshold": 3,
+    "rare_skill_threshold": 0.1,
+    "career_velocity_threshold": 2,
+    "certification_keywords": ["certified", "certification", "professional", "expert"]
+  },
+  "grammar_rules": {
+    "sentence_length": {
+      "min_words": 8,
+      "max_words": 35
+    },
+    "transitions": {
+      "required_frequency": 0.3,
+      "connectors": ["Additionally", "However", "Furthermore", "Moreover", "In contrast", "Specifically"]
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "enabled_domains": ["marketing_sales", "healthcare", "finance_accounting"],
+  "fuzzy_matching": {
+    "enabled": true,
+    "threshold": 0.7,
+    "use_semantic": true
+  },
+  "confidence_weights": {
+    "exact_match": 1.0,
+    "fuzzy_match": 0.6
+  }
+}
+

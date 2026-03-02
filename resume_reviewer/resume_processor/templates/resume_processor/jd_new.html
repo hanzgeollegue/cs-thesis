@@ -53,12 +53,23 @@
         </div>
         
         <div class="form-section">
+            <h3>Job Description & Responsibilities</h3>
+            
+            <div class="form-group">
+                <label for="responsibilities">Job Description & Key Responsibilities</label>
+                <textarea id="responsibilities" name="responsibilities" 
+                          placeholder="Describe the role, key responsibilities, and what the candidate will be doing&#10;&#10;e.g.,&#10;• Develop and maintain web applications using React and Node.js&#10;• Collaborate with cross-functional teams to deliver features&#10;• Write clean, maintainable code and participate in code reviews&#10;• Work with databases and APIs to build scalable solutions">{{ last_jd_criteria.responsibilities|join:'&#10;' }}</textarea>
+                <small>Provide a detailed description of the role and what the candidate will be responsible for. This helps our AI better understand the position.</small>
+            </div>
+        </div>
+        
+        <div class="form-section">
             <h3>Skills & Requirements</h3>
             
             <div class="form-group">
-                <label for="must_have_skills">Must-Have Skills *</label>
+                <label for="must_have_skills">Must-Have Skills</label>
                 <textarea id="must_have_skills" name="must_have_skills" 
-                          placeholder="List required skills separated by commas&#10;e.g., Python, React, SQL, AWS" required>{{ last_jd_criteria.must_have_skills|join:', ' }}</textarea>
+                          placeholder="List required skills separated by commas&#10;e.g., Python, React, SQL, AWS">{{ last_jd_criteria.must_have_skills|join:', ' }}</textarea>
                 <small>Separate skills with commas. These are required for the role.</small>
             </div>
             
@@ -214,6 +225,11 @@
 .form-group textarea {
     height: 80px;
     resize: vertical;
+}
+
+.form-group textarea[name="responsibilities"] {
+    height: 120px;
+    min-height: 120px;
 }
 
 .form-group small {

@@ -1,102 +1,186 @@
 {% extends 'resume_processor/base.html' %}
 
-{% block title %}Candidate Rankings{% endblock %}
+{% block title %}Results - Candidate Rankings{% endblock %}
 
 {% block content %}
 <div class="rankings-section">
+    <h2>Candidate Rankings</h2>
+    <p>Review and compare candidate results from your batch processing.</p>
+    
+    <!-- Breadcrumb -->
     <div class="breadcrumb">
-        <a href="{% url 'home' %}">Home</a> → 
-        <a href="{% url 'jd_new' %}">Job Description</a> → 
-        <a href="{% url 'resume_upload' %}">Upload</a> → 
+        <a href="{% url 'home' %}">Home</a> > 
+        <a href="{% url 'jd_new' %}">Job Description</a> > 
+        <a href="{% url 'resume_upload' %}">Upload</a> > 
         <span>Results</span>
     </div>
-    
+
+    <!-- Stepper -->
     <div class="stepper">
-        <div class="step completed">1. Job Description</div>
-        <div class="step completed">2. Upload Resumes</div>
-        <div class="step completed">3. Processing</div>
-        <div class="step active">4. Results</div>
+        <div class="step completed">Job Description</div>
+        <div class="step completed">Upload Resumes</div>
+        <div class="step completed">Processing</div>
+        <div class="step active">Results</div>
     </div>
-    
-    <h2>Candidate Rankings</h2>
-    <p>AI-powered analysis of your candidates based on job requirements.</p>
-    
+
     {% if batch_info %}
+    <!-- Batch Summary -->
     <div class="batch-summary">
-        <h3>Job Requirements</h3>
+        <h3>Batch Information</h3>
         <div class="summary-grid">
             <div class="summary-item">
-                <strong>Position:</strong> {{ batch_info.criteria.position_title|default:"Not specified" }}
+                <strong>Position:</strong>
+                {{ batch_info.criteria.position_title|default:"Not specified" }}
             </div>
             <div class="summary-item">
-                <strong>Level:</strong> {{ batch_info.criteria.seniority_level|default:"Not specified" }}
+                <strong>Experience Required:</strong>
+                {{ batch_info.criteria.experience_min_years|default:"0" }} years
             </div>
             <div class="summary-item">
-                <strong>Experience:</strong> {{ batch_info.criteria.experience_min_years|default:"Not specified" }} years
+                <strong>Required Skills:</strong>
+                {{ batch_info.criteria.must_have_skills|length|default:"0" }} skills
             </div>
             <div class="summary-item">
-                <strong>Must-have skills:</strong> {{ batch_info.criteria.must_have_skills|join:", "|default:"Not specified" }}
+                <strong>Total Resumes:</strong>
+                {{ candidates|length|default:"0" }} candidates
             </div>
         </div>
     </div>
     {% endif %}
     
-    <div class="candidates-grid">
+    <div class="candidates-grid" id="candidates-grid">
         {% for candidate in candidates %}
-        <div class="candidate-card" data-candidate-id="{{ candidate.id }}">
-            <div class="candidate-header">
-                <div class="candidate-name">{{ candidate.display_name }}</div>
-                <div class="candidate-rank">#{{ forloop.counter }}</div>
+        <div class="candidate-card" role="region" aria-labelledby="candidate-name-{{ forloop.counter }}" 
+             data-candidate-id="{{ candidate.id }}"
+             data-rank="{{ forloop.counter }}"
+             data-score="{{ candidate.final_score_percentage|default:0 }}"
+             data-coverage="{{ candidate.coverage_percentage|default:0 }}"
+             data-semantic="{{ candidate.scores.semantic_score|default:0 }}">
+            <!-- RankBadge - Top right corner -->
+            <div class="rank-badge" data-rank="{{ forloop.counter }}">
+                #{{ forloop.counter }}
             </div>
             
-            <div class="candidate-scores">
-                <div class="score-item">
-                    <span class="score-label">Overall Match:</span>
-                    <span class="score-value">{{ candidate.friendly_rationale }}</span>
+            <!-- Candidate Name - Prominent at top -->
+            <div class="candidate-name-header" id="candidate-name-{{ forloop.counter }}">
+                <h3>
+                    {% if candidate.display_name %}
+                        {{ candidate.display_name }}
+                    {% elif candidate.meta and candidate.meta.source_file %}
+                        {{ candidate.meta.source_file|default:"Unknown" }}
+                    {% else %}
+                        Candidate {{ forloop.counter }}
+                    {% endif %}
+                </h3>
+            </div>
+            
+            <!-- Score Strip -->
+            <div class="score-strip">
+                <div class="score-number" aria-label="Final Score: {{ candidate.final_score_percentage|floatformat:0 }} percent">
+                    {{ candidate.final_score_percentage|floatformat:0 }}%
                 </div>
+                <meter value="{{ candidate.final_score_percentage|floatformat:0 }}" min="0" max="100" 
+                       aria-label="Score meter showing {{ candidate.final_score_percentage|floatformat:0 }} percent">
+                    {{ candidate.final_score_percentage|floatformat:0 }}%
+                </meter>
+            </div>
+
+            <!-- MetricsGrid: Semantic <dl> grid replacing .score-item wrappers -->
+            <dl class="metrics-grid">
+                <dt>Skills</dt>
+                <dd>{{ candidate.scores.matched_required_skills|length|default:"0" }}/{{ batch_info.criteria.must_have_skills|length|default:"0" }}</dd>
                 
-                {% if candidate.scores.matched_required_skills %}
-                <div class="score-item">
-                    <span class="score-label">Skills Match:</span>
-                    <span class="score-value">{{ candidate.scores.matched_required_skills|length }}/{{ batch_info.criteria.must_have_skills|length }} required</span>
-                </div>
+                <dt>Coverage</dt>
+                <dd>{{ candidate.coverage_percentage|floatformat:0|default:"0" }}%</dd>
+                
+                {% if candidate.scores.content_relevance_label and candidate.scores.content_relevance_label|lower != "n/a" %}
+                <dt>Content</dt>
+                <dd>{{ candidate.scores.content_relevance_label }}</dd>
                 {% endif %}
                 
-                <div class="score-item">
-                    <span class="score-label">Final Score:</span>
-                    <span class="score-value">{{ candidate.final_score_percentage }}%</span>
-                </div>
-            </div>
-            
-            <div class="candidate-rationale">
-                <strong>Analysis:</strong> {{ candidate.friendly_rationale }}
-            </div>
-            
-            {% if candidate.matched_skills %}
-            <div class="matched-skills">
-                <strong>Matched Skills:</strong>
-                <div class="skill-tags">
-                    {% for skill_obj in candidate.matched_skills %}
-                        {% if skill_obj.source == 'explicit' %}
-                            <span class="skill-tag matched-explicit" title="Explicitly listed in Skills section">{{ skill_obj.skill_id }}</span>
+                {% if candidate.scores.keyword_match_label and candidate.scores.keyword_match_label|lower != "n/a" %}
+                <dt>Keywords</dt>
+                <dd>{{ candidate.scores.keyword_match_label }}</dd>
+                {% endif %}
+            </dl>
+
+            <!-- SkillChips: Matched ✅ / Missing ⚠️ with truncation -->
+            <div class="skill-chips-section">
+                <!-- Matched Skills -->
+                <div class="skill-group">
+                    <div class="skill-group-header">
+                        <span class="skill-group-icon">✅</span>
+                        <span class="skill-group-label">Matched</span>
+                    </div>
+                    <div class="skill-chips" data-candidate-id="{{ candidate.id }}" data-type="matched">
+                        {% if candidate.scores.matched_required_skills %}
+                            {% for skill in candidate.scores.matched_required_skills|slice:":6" %}
+                                <span class="skill-chip matched">{{ skill }}</span>
+                            {% endfor %}
+                            {% if candidate.scores.matched_required_skills|length > 6 %}
+                                <button class="skill-expander" onclick="toggleSkillChips('{{ candidate.id }}', 'matched')">
+                                    +{{ candidate.scores.matched_required_skills|length|add:"-6" }} more
+                                </button>
+                            {% endif %}
                         {% else %}
-                            <span class="skill-tag matched-inferred" title="Inferred from Experience/Projects">{{ skill_obj.skill_id }}*</span>
+                            <span class="no-skills">None</span>
                         {% endif %}
-                    {% endfor %}
+                    </div>
                 </div>
-                <small class="skill-legend" style="margin-top: 8px; display: block; color: #6c757d;">
-                    * Inferred from experience/projects
-                </small>
+
+                <!-- Missing Skills -->
+                {% if candidate.scores.missing_skills %}
+                <div class="skill-group">
+                    <div class="skill-group-header">
+                        <span class="skill-group-icon">⚠️</span>
+                        <span class="skill-group-label">Missing</span>
+                    </div>
+                    <div class="skill-chips" data-candidate-id="{{ candidate.id }}" data-type="missing">
+                        {% for skill in candidate.scores.missing_skills|slice:":6" %}
+                            <span class="skill-chip missing">{{ skill }}</span>
+                        {% endfor %}
+                        {% if candidate.scores.missing_skills|length > 6 %}
+                            <button class="skill-expander" onclick="toggleSkillChips('{{ candidate.id }}', 'missing')">
+                                +{{ candidate.scores.missing_skills|length|add:"-6" }} more
+                            </button>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+
+                <!-- Nice-to-Have Skills -->
+                {% if candidate.scores.matched_nice_skills %}
+                <div class="skill-group">
+                    <div class="skill-group-header">
+                        <span class="skill-group-icon">ℹ️</span>
+                        <span class="skill-group-label">Nice matches</span>
+                    </div>
+                    <div class="skill-chips" data-candidate-id="{{ candidate.id }}" data-type="nice">
+                        {% for skill in candidate.scores.matched_nice_skills|slice:":6" %}
+                            <span class="skill-chip nice">{{ skill }}</span>
+                        {% endfor %}
+                        {% if candidate.scores.matched_nice_skills|length > 6 %}
+                            <button class="skill-expander" onclick="toggleSkillChips('{{ candidate.id }}', 'nice')">
+                                +{{ candidate.scores.matched_nice_skills|length|add:"-6" }} more
+                            </button>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
             </div>
-            {% endif %}
-            
-            <div class="candidate-actions">
-                <a href="{% url 'candidate_detail' candidate.id %}" class="btn btn-primary btn-sm">View Details</a>
+
+            <!-- ActionsRow: View Details, Compare -->
+            <div class="actions-row">
+                <a href="{% url 'candidate_detail' candidate.id %}" class="btn btn-primary">
+                    View Details
+                </a>
                 <label class="compare-checkbox">
-                    <input type="checkbox" class="compare-select" data-candidate-id="{{ candidate.id }}">
+                    <input type="checkbox" class="compare-select" data-candidate-id="{{ candidate.id }}" 
+                           onchange="toggleCompare('{{ candidate.id }}')">
                     Compare
                 </label>
             </div>
+
         </div>
         {% empty %}
         <div class="empty-state">
@@ -108,309 +192,782 @@
     </div>
     
     {% if candidates %}
-    <div class="bulk-actions">
-        <button id="compareBtn" class="btn btn-secondary" disabled>Compare Selected</button>
-        <button id="exportBtn" class="btn btn-info">Export Results</button>
-        <a href="{% url 'resume_upload' %}" class="btn btn-primary">Process New Batch</a>
+    <!-- Sticky Footer Toolbar -->
+    <div class="sticky-toolbar">
+        <div class="toolbar-content">
+            <div class="toolbar-left">
+                <label for="sort-select">Sort by:</label>
+                <select id="sort-select" onchange="sortCandidates(this.value)">
+                    <option value="score">Final Score</option>
+                    <option value="coverage">Coverage</option>
+                    <option value="experience">Experience</option>
+                    <option value="skills">Skills Match</option>
+                </select>
+            </div>
+            <div class="toolbar-right">
+                <button id="compareBtn" class="btn btn-secondary" disabled>Compare Selected</button>
+                <a href="{% url 'resume_upload' %}" class="btn btn-outline">Process New Batch</a>
+                <a href="{% url 'export_results_json' %}" class="btn btn-outline">Export JSON</a>
+                <a href="{% url 'export_results_csv' %}" class="btn btn-outline">Export CSV</a>
+            </div>
+        </div>
+        <div id="compare-notice" class="compare-notice" style="display: none;">
+            Maximum 3 candidates selected
+        </div>
     </div>
     {% endif %}
 </div>
 
 <style>
-.rankings-section h2 {
-    text-align: center;
-    color: #2c3e50;
-    margin-bottom: 10px;
-    font-size: 2rem;
-}
+    /* CSS Variables for standardized spacing and colors */
+    :root {
+        --primary-color: #007bff;
+        --success-color: #28a745;
+        --warning-color: #ffc107;
+        --danger-color: #dc3545;
+        --light-color: #f8f9fa;
+        --dark-color: #343a40;
+        --border-radius: 8px;
+        --spacing-xs: 4px;
+        --spacing-sm: 8px;
+        --spacing-md: 12px;
+        --spacing-lg: 16px;
+        --spacing-xl: 20px;
+    }
 
-.rankings-section p {
-    text-align: center;
-    color: #7f8c8d;
-    margin-bottom: 30px;
-    font-size: 1.1rem;
-}
+    /* Candidate name header - Must be visible and prominent */
+    .candidate-name-header {
+        margin: 0 0 16px 0;
+        padding: 0 0 12px 0;
+        border-bottom: 2px solid #e9ecef;
+        position: relative;
+        z-index: 0;
+    }
+    
+    .candidate-name-header h3 {
+        margin: 0;
+        padding: 0;
+        font-size: 1.4rem;
+        font-weight: 700;
+        color: #111827;
+        line-height: 1.4;
+        display: block;
+        visibility: visible;
+    }
+    
+    /* Screen reader only content */
+    .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
 
-.breadcrumb {
-    margin-bottom: 20px;
-    color: #6c757d;
-}
+    /* Page header styles */
+    .rankings-section h2 {
+        text-align: center;
+        color: #2c3e50;
+        margin-bottom: 10px;
+        font-size: 2rem;
+    }
 
-.breadcrumb a {
-    color: #007bff;
-    text-decoration: none;
-}
+    .rankings-section p {
+        text-align: center;
+        color: #7f8c8d;
+        margin-bottom: 30px;
+        font-size: 1.1rem;
+    }
 
-.breadcrumb a:hover {
-    text-decoration: underline;
-}
+    .breadcrumb {
+        margin-bottom: var(--spacing-xl);
+        color: #6c757d;
+    }
 
-.stepper {
-    display: flex;
-    justify-content: center;
-    margin-bottom: 30px;
-    gap: 20px;
-}
+    .breadcrumb a {
+        color: var(--primary-color);
+        text-decoration: none;
+    }
 
-.step {
-    padding: 10px 20px;
-    border-radius: 20px;
-    background: #e9ecef;
-    color: #6c757d;
-    font-weight: 500;
-}
+    .breadcrumb a:hover {
+        text-decoration: underline;
+    }
 
-.step.active {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-}
-
-.step.completed {
-    background: #28a745;
-    color: white;
-}
-
-.batch-summary {
-    background: #e8f5e8;
-    border: 1px solid #c3e6cb;
-    border-radius: 10px;
-    padding: 20px;
-    margin-bottom: 30px;
-}
-
-.batch-summary h3 {
-    color: #155724;
-    margin-bottom: 15px;
-}
-
-.summary-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 15px;
-}
-
-.summary-item {
-    color: #155724;
-}
-
-.candidates-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-    gap: 20px;
-    margin-bottom: 30px;
-}
-
-.candidate-card {
-    background: white;
-    border: 1px solid #dee2e6;
-    border-radius: 15px;
-    padding: 20px;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-    transition: transform 0.3s ease, box-shadow 0.3s ease;
-}
-
-.candidate-card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 5px 20px rgba(0,0,0,0.15);
-}
-
-.candidate-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 15px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid #e9ecef;
-}
-
-.candidate-name {
-    font-size: 1.2rem;
-    font-weight: 600;
-    color: #2c3e50;
-}
-
-.candidate-rank {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    padding: 5px 12px;
-    border-radius: 15px;
-    font-weight: 600;
-    font-size: 0.9rem;
-}
-
-.candidate-scores {
-    margin-bottom: 15px;
-}
-
-.score-item {
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: 8px;
-    font-size: 0.95rem;
-}
-
-.score-label {
-    color: #6c757d;
-    font-weight: 500;
-}
-
-.score-value {
-    color: #2c3e50;
-    font-weight: 600;
-}
-
-.overall-4 { color: #28a745; }
-.overall-3 { color: #17a2b8; }
-.overall-2 { color: #ffc107; }
-.overall-1 { color: #fd7e14; }
-.overall-0 { color: #dc3545; }
-
-.candidate-rationale {
-    background: #f8f9fa;
-    padding: 12px;
-    border-radius: 8px;
-    margin-bottom: 15px;
-    font-size: 0.9rem;
-    line-height: 1.5;
-    color: #495057;
-}
-
-.matched-skills {
-    margin-bottom: 15px;
-}
-
-.skill-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    margin-top: 8px;
-}
-
-.skill-tag {
-    color: white;
-    padding: 4px 8px;
-    border-radius: 12px;
-    font-size: 0.8rem;
-    font-weight: 500;
-}
-
-.skill-tag.matched-explicit {
-    background: #28a745;  /* Green for explicitly listed */
-}
-
-.skill-tag.matched-inferred {
-    background: #17a2b8;  /* Blue for inferred from context */
-    font-style: italic;
-}
-
-.candidate-actions {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-.compare-checkbox {
-    display: flex;
-    align-items: center;
-    cursor: pointer;
-    font-size: 0.9rem;
-    color: #6c757d;
-}
-
-.compare-checkbox input[type="checkbox"] {
-    margin-right: 5px;
-    transform: scale(1.1);
-}
-
-.bulk-actions {
-    text-align: center;
-    padding: 20px;
-    background: #f8f9fa;
-    border-radius: 10px;
-    display: flex;
-    gap: 15px;
-    justify-content: center;
-    flex-wrap: wrap;
-}
-
-.empty-state {
-    text-align: center;
-    padding: 60px 20px;
-    color: #6c757d;
-}
-
-.empty-state h3 {
-    color: #495057;
-    margin-bottom: 15px;
-}
-
-@media (max-width: 768px) {
     .stepper {
-        flex-direction: column;
-        align-items: center;
-        gap: 10px;
+        display: flex;
+        justify-content: center;
+        margin-bottom: 30px;
+        gap: var(--spacing-xl);
     }
-    
-    .candidates-grid {
-        grid-template-columns: 1fr;
+
+    .step {
+        padding: 10px 20px;
+        border-radius: 20px;
+        background: #e9ecef;
+        color: #6c757d;
+        font-weight: 500;
     }
-    
+
+    .step.active {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+    }
+
+    .step.completed {
+        background: var(--success-color);
+        color: white;
+    }
+
+    .batch-summary {
+        background: var(--light-color);
+        border: 1px solid #e9ecef;
+        border-radius: var(--border-radius);
+        padding: var(--spacing-xl);
+        margin-bottom: 30px;
+    }
+
+    .batch-summary h3 {
+        color: #2c3e50;
+        margin-bottom: var(--spacing-md);
+        font-size: 1.3rem;
+    }
+
     .summary-grid {
-        grid-template-columns: 1fr;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: var(--spacing-md);
     }
-    
-    .bulk-actions {
-        flex-direction: column;
+
+    .summary-item {
+        background: white;
+        padding: var(--spacing-md);
+        border-radius: 6px;
+        border: 1px solid #e9ecef;
+    }
+
+    .summary-item strong {
+        color: #495057;
+        display: block;
+        margin-bottom: 5px;
+    }
+
+    /* Candidates Grid - Clean card layout */
+    .candidates-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+        gap: var(--spacing-xl);
+        margin-bottom: 80px; /* Space for sticky toolbar */
+    }
+
+    .candidate-card {
+        background: white;
+        border: 1px solid #e9ecef;
+        border-radius: 12px;
+        padding: var(--spacing-xl);
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        position: relative;
+    }
+
+    .candidate-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+
+    /* RankBadge - Top right corner */
+    .rank-badge {
+        position: absolute;
+        top: var(--spacing-md);
+        right: var(--spacing-md);
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 6px 12px;
+        border-radius: 15px;
+        font-weight: bold;
+        font-size: 0.9rem;
+        z-index: 1;
+    }
+
+    /* ScoreStrip - Big % + meter */
+    .score-strip {
+        text-align: center;
+        margin-bottom: var(--spacing-md);
+        padding: var(--spacing-md);
+        background: linear-gradient(135deg, #e3f2fd 0%, #f8f9fa 100%);
+        border-radius: var(--border-radius);
+        border: 2px solid var(--primary-color);
+    }
+
+    .score-number {
+        font-size: 3rem;
+        font-weight: bold;
+        color: var(--success-color);
+        line-height: 1;
+        margin-bottom: var(--spacing-sm);
+    }
+
+    .score-strip meter {
+        width: 200px;
+        height: 20px;
+        border-radius: 10px;
+    }
+
+    /* BadgesRow - Overall/Experience badges */
+    .badges-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--spacing-sm);
+        margin-bottom: var(--spacing-md);
+    }
+
+    .badge {
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        border: 1px solid;
+    }
+
+    .badge-excellent {
+        background: #fff3e0;
+        color: #ef6c00;
+        border-color: #ffcc02;
+    }
+
+    .badge-good {
+        background: #e8f5e8;
+        color: #2e7d32;
+        border-color: #c8e6c9;
+    }
+
+    .badge-moderate {
+        background: #fff8e1;
+        color: #f57c00;
+        border-color: #ffecb3;
+    }
+
+    .badge-low {
+        background: #ffebee;
+        color: #c62828;
+        border-color: #ffcdd2;
+    }
+
+    .badge-experience {
+        background: #e8f5e8;
+        color: #2e7d32;
+        border-color: #c8e6c9;
+    }
+
+    .badge-no-experience {
+        background: #ffebee;
+        color: #c62828;
+        border-color: #ffcdd2;
+    }
+
+    /* MetricsGrid - Semantic <dl> grid replacing .score-item wrappers */
+    .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: var(--spacing-sm);
+        margin-bottom: var(--spacing-md);
+        padding: var(--spacing-md);
+        background: var(--light-color);
+        border-radius: var(--border-radius);
+        font-size: 0.9rem;
+    }
+
+    .metrics-grid dt {
+        font-weight: 600;
+        color: var(--dark-color);
+        text-align: left;
+    }
+
+    .metrics-grid dd {
+        margin: 0;
+        font-weight: bold;
+        color: var(--primary-color);
+        text-align: right;
+    }
+
+    /* SkillChips - Matched ✅ / Missing ⚠️ with truncation */
+    .skill-chips-section {
+        margin-bottom: var(--spacing-md);
+    }
+
+    .skill-group {
+        margin-bottom: var(--spacing-sm);
+    }
+
+    .skill-group-header {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+        margin-bottom: var(--spacing-sm);
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+
+    .skill-group-icon {
+        font-size: 1rem;
+    }
+
+    .skill-group-label {
+        color: var(--dark-color);
+    }
+
+    .skill-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .skill-chip {
+        padding: 4px 10px;
+        border-radius: 15px;
+        font-size: 0.75rem;
+        font-weight: 500;
+        border: 1px solid;
+    }
+
+    .skill-chip.matched {
+        background: #e8f5e8;
+        color: #2e7d32;
+        border-color: #c8e6c9;
+    }
+
+    .skill-chip.missing {
+        background: #ffebee;
+        color: #c62828;
+        border-color: #ffcdd2;
+    }
+
+    .skill-chip.nice {
+        background: #e3f2fd;
+        color: #1565c0;
+        border-color: #bbdefb;
+    }
+
+    .skill-expander {
+        background: #f3e5f5;
+        color: #7b1fa2;
+        border: 1px solid #e1bee7;
+        border-radius: 15px;
+        padding: 4px 10px;
+        font-size: 0.75rem;
+        font-style: italic;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+    .skill-expander:hover {
+        background: #e1bee7;
+    }
+
+    .no-skills {
+        color: #6c757d;
+        font-size: 0.8rem;
+        font-style: italic;
+    }
+
+    /* DetailsAccordion - Full analysis collapsed */
+    .details-accordion {
+        margin-bottom: var(--spacing-md);
+        border: 1px solid #e9ecef;
+        border-radius: var(--border-radius);
+        overflow: hidden;
+    }
+
+    .details-accordion summary {
+        padding: var(--spacing-sm) var(--spacing-md);
+        background: var(--light-color);
+        cursor: pointer;
+        font-weight: 600;
+        color: var(--primary-color);
+        border-bottom: 1px solid #e9ecef;
+    }
+
+    .details-accordion summary:hover {
+        background: #e9ecef;
+    }
+
+    .analysis-content {
+        padding: var(--spacing-md);
+        background: white;
+    }
+
+    .analysis-content p {
+        margin: 0;
+        line-height: 1.5;
+        color: #495057;
+    }
+
+    /* ActionsRow - View Details, Compare */
+    .actions-row {
+        display: flex;
+        gap: var(--spacing-sm);
         align-items: center;
     }
-}
+
+    .btn {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 6px;
+        text-decoration: none;
+        font-size: 0.9rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+    }
+
+    .btn-primary {
+        background: var(--primary-color);
+        color: white;
+    }
+
+    .btn-primary:hover {
+        background: #0056b3;
+        transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+        background: #6c757d;
+        color: white;
+    }
+
+    .btn-secondary:hover {
+        background: #545b62;
+        transform: translateY(-1px);
+    }
+
+    .btn-outline {
+        background: transparent;
+        color: var(--primary-color);
+        border: 1px solid var(--primary-color);
+    }
+
+    .btn-outline:hover {
+        background: var(--primary-color);
+        color: white;
+    }
+
+    .compare-checkbox {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 0.9rem;
+        color: #495057;
+        cursor: pointer;
+    }
+
+    .compare-checkbox input[type="checkbox"] {
+        margin: 0;
+    }
+
+    /* Sticky Footer Toolbar */
+    .sticky-toolbar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: white;
+        border-top: 1px solid #e9ecef;
+        box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+        z-index: 1000;
+    }
+
+    .toolbar-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: var(--spacing-md) var(--spacing-xl);
+        max-width: 1200px;
+        margin: 0 auto;
+    }
+
+    .toolbar-left {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+    }
+
+    .toolbar-left label {
+        font-weight: 600;
+        color: var(--dark-color);
+    }
+
+    .toolbar-left select {
+        padding: 4px 8px;
+        border: 1px solid #ced4da;
+        border-radius: 4px;
+        background: white;
+        font-size: 0.9rem;
+    }
+
+    .toolbar-right {
+        display: flex;
+        gap: var(--spacing-sm);
+    }
+
+    .compare-notice {
+        text-align: center;
+        padding: var(--spacing-xs) var(--spacing-md);
+        background: #fff3cd;
+        color: #856404;
+        font-size: 0.8rem;
+        border-top: 1px solid #ffeaa7;
+    }
+
+    .empty-state {
+        text-align: center;
+        padding: 40px;
+        color: #6c757d;
+    }
+
+    .empty-state h3 {
+        color: #495057;
+        margin-bottom: 10px;
+    }
+
+    /* Responsive Design */
+    @media (max-width: 768px) {
+        .candidates-grid {
+            grid-template-columns: 1fr;
+            margin-bottom: 100px; /* More space for mobile toolbar */
+        }
+        
+        .candidate-card {
+            padding: var(--spacing-lg);
+        }
+
+        .metrics-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .score-number {
+            font-size: 2.5rem;
+        }
+
+        .score-strip meter {
+            width: 150px;
+        }
+
+        .actions-row {
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .toolbar-content {
+            flex-direction: column;
+            gap: var(--spacing-sm);
+            padding: var(--spacing-md);
+        }
+
+        .toolbar-left,
+        .toolbar-right {
+            justify-content: center;
+        }
+    }
+
+    @media (max-width: 480px) {
+        .score-number {
+            font-size: 2rem;
+        }
+
+        .candidate-card {
+            padding: var(--spacing-md);
+        }
+    }
 </style>
 
 <script>
-document.addEventListener('DOMContentLoaded', function() {
-    const compareBtn = document.getElementById('compareBtn');
-    const exportBtn = document.getElementById('exportBtn');
-    const compareCheckboxes = document.querySelectorAll('.compare-select');
+    // Store all skills data for expansion
+    let allSkillsData = {};
 
-    // Handle compare checkbox changes
-    compareCheckboxes.forEach(checkbox => {
-        checkbox.addEventListener('change', updateCompareButton);
+    // Initialize skills data on page load
+    document.addEventListener('DOMContentLoaded', function() {
+        const skillChips = document.querySelectorAll('.skill-chips');
+        skillChips.forEach(chips => {
+            const candidateId = chips.dataset.candidateId;
+            const type = chips.dataset.type;
+            if (!allSkillsData[candidateId]) {
+                allSkillsData[candidateId] = {};
+            }
+            allSkillsData[candidateId][type] = Array.from(chips.children).map(chip => chip.outerHTML);
+        });
     });
 
-    function updateCompareButton() {
-        const checkedBoxes = document.querySelectorAll('.compare-select:checked');
-        compareBtn.disabled = checkedBoxes.length < 2;
+    // Toggle skill chips expansion - vanilla JS implementation
+    function toggleSkillChips(candidateId, type) {
+        const button = event.target;
+        const skillChips = document.querySelector(`[data-candidate-id="${candidateId}"][data-type="${type}"]`);
         
-        if (checkedBoxes.length > 3) {
-            // Limit to 3 candidates
-            checkedBoxes[checkedBoxes.length - 1].checked = false;
-            updateCompareButton();
+        if (button.textContent.includes('more')) {
+            // Show all skills
+            const allSkills = allSkillsData[candidateId][type];
+            skillChips.innerHTML = allSkills.join('');
+        } else {
+            // Show only first 6 skills
+            const allSkills = allSkillsData[candidateId][type];
+            const visibleSkills = allSkills.slice(0, 6);
+            const remainingCount = allSkills.length - 6;
+            
+            skillChips.innerHTML = visibleSkills.join('');
+            if (remainingCount > 0) {
+                const expander = document.createElement('button');
+                expander.className = 'skill-expander';
+                expander.textContent = `+${remainingCount} more`;
+                expander.onclick = () => toggleSkillChips(candidateId, type);
+                skillChips.appendChild(expander);
+            }
         }
     }
 
-    // Handle compare button click
-    compareBtn.addEventListener('click', function() {
-        const checkedBoxes = document.querySelectorAll('.compare-select:checked');
-        const candidateIds = Array.from(checkedBoxes).map(cb => cb.dataset.candidateId);
+    // Numeric sorting with tiebreakers - final_score desc → coverage desc → semantic desc → name asc
+    function sortCandidates(sortBy) {
+        const grid = document.getElementById('candidates-grid');
+        const cards = Array.from(grid.children).filter(card => card.classList.contains('candidate-card'));
         
-        if (candidateIds.length >= 2) {
-            const url = `{% url 'candidate_compare' %}?${candidateIds.map(id => `ids=${id}`).join('&')}`;
-            window.location.href = url;
+        cards.sort((a, b) => {
+            let comparison = 0;
+            
+            switch(sortBy) {
+                case 'score':
+                    const scoreA = parseFloat(a.dataset.score) || 0;
+                    const scoreB = parseFloat(b.dataset.score) || 0;
+                    comparison = scoreB - scoreA; // Descending
+                    break;
+                case 'coverage':
+                    const coverageA = parseFloat(a.dataset.coverage) || 0;
+                    const coverageB = parseFloat(b.dataset.coverage) || 0;
+                    comparison = coverageB - coverageA; // Descending
+                    break;
+                case 'semantic':
+                    const semanticA = parseFloat(a.dataset.semantic) || 0;
+                    const semanticB = parseFloat(b.dataset.semantic) || 0;
+                    comparison = semanticB - semanticA; // Descending
+                    break;
+                case 'experience':
+                    const expA = a.querySelector('.badge-experience') ? 1 : 0;
+                    const expB = b.querySelector('.badge-experience') ? 1 : 0;
+                    comparison = expB - expA; // Descending
+                    break;
+                case 'skills':
+                    const skillsA = a.querySelector('.metrics-grid dd') ? parseInt(a.querySelector('.metrics-grid dd').textContent.split('/')[0]) : 0;
+                    const skillsB = b.querySelector('.metrics-grid dd') ? parseInt(b.querySelector('.metrics-grid dd').textContent.split('/')[0]) : 0;
+                    comparison = parseInt(skillsB) - parseInt(skillsA); // Descending
+                    break;
+            }
+            
+            // Tiebreakers: coverage desc → semantic desc → name asc
+            if (comparison === 0) {
+                const coverageA = parseFloat(a.dataset.coverage) || 0;
+                const coverageB = parseFloat(b.dataset.coverage) || 0;
+                comparison = coverageB - coverageA;
+                
+                if (comparison === 0) {
+                    const semanticA = parseFloat(a.dataset.semantic) || 0;
+                    const semanticB = parseFloat(b.dataset.semantic) || 0;
+                    comparison = semanticB - semanticA;
+                    
+                    if (comparison === 0) {
+                        const nameA = a.querySelector('.candidate-name-header h3')?.textContent?.toLowerCase() || '';
+                        const nameB = b.querySelector('.candidate-name-header h3')?.textContent?.toLowerCase() || '';
+                        comparison = nameA.localeCompare(nameB); // Ascending
+                    }
+                }
+            }
+            
+            return comparison;
+        });
+        
+        // Reorder cards and reassign rank badges
+        cards.forEach((card, index) => {
+            grid.appendChild(card);
+            const rankBadge = card.querySelector('.rank-badge');
+            rankBadge.textContent = `#${index + 1}`;
+            rankBadge.dataset.rank = index + 1;
+        });
+    }
+
+    // Export functionality
+    function exportResults(event) {
+        event.preventDefault();
+        // Implementation would depend on backend endpoint
+        console.log('Export functionality - to be implemented');
+    }
+
+    // Compare functionality with 3-candidate limit
+    let selectedCandidates = [];
+    const maxCompare = 3;
+
+    function toggleCompare(candidateId) {
+        const checkbox = event.target;
+        const notice = document.getElementById('compare-notice');
+        const compareBtn = document.getElementById('compareBtn');
+        
+        if (checkbox.checked) {
+            if (selectedCandidates.length >= maxCompare) {
+                checkbox.checked = false;
+                notice.style.display = 'block';
+                setTimeout(() => {
+                    notice.style.display = 'none';
+                }, 3000);
+                return;
+            }
+            selectedCandidates.push(candidateId);
+        } else {
+            selectedCandidates = selectedCandidates.filter(id => id !== candidateId);
+        }
+        
+        updateCompareUI();
+    }
+
+    function updateCompareUI() {
+        const compareBtn = document.getElementById('compareBtn');
+        const checkboxes = document.querySelectorAll('.compare-select');
+        
+        compareBtn.disabled = selectedCandidates.length === 0;
+        compareBtn.textContent = selectedCandidates.length > 0 ? 
+            `Compare Selected (${selectedCandidates.length})` : 'Compare Selected';
+        
+        // Disable remaining checkboxes when limit reached
+        checkboxes.forEach(checkbox => {
+            if (selectedCandidates.length >= maxCompare && !checkbox.checked) {
+                checkbox.disabled = true;
+            } else {
+                checkbox.disabled = false;
+            }
+        });
+    }
+
+    function handleCompareClick() {
+        if (selectedCandidates.length < 2) {
+            alert('Please select at least 2 candidates to compare.');
+            return;
+        }
+        
+        // Build URL with selected candidate IDs
+        const ids = selectedCandidates.map(id => `ids=${id}`).join('&');
+        const compareUrl = `{% url 'candidate_compare' %}?${ids}`;
+        
+        // Navigate to compare page
+        window.location.href = compareUrl;
+    }
+
+    // Add click event listener to compare button
+    document.addEventListener('DOMContentLoaded', function() {
+        const compareBtn = document.getElementById('compareBtn');
+        if (compareBtn) {
+            compareBtn.addEventListener('click', handleCompareClick);
         }
     });
-
-    // Handle export button click
-    exportBtn.addEventListener('click', function() {
-        // Default JSON; hold Shift for CSV
-        const csv = event && event.shiftKey;
-        const url = csv ? '{% url "export_results_csv" %}' : '{% url "export_results_json" %}';
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = '';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-    });
-});
 </script>
 {% endblock %}
+

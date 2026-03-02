@@ -139,7 +139,6 @@ def process_batch_async(task_id: str, resume_paths, job_description, jd_criteria
     """Process batch asynchronously in background thread."""
     try:
         from .batch_processor import BatchProcessor
-        from .config import get_llm_config
         
         logger.info(f"Starting async processing for task {task_id}")
         
@@ -152,20 +151,9 @@ def process_batch_async(task_id: str, resume_paths, job_description, jd_criteria
         # Update status
         update_task(task_id, status='processing', progress=10, message='Initializing batch processor...')
         
-        # Get API key
-        llm_cfg = get_llm_config()
-        api_key = llm_cfg['api_key']
-        
         # Initialize processor
         update_task(task_id, progress=15, message='Loading AI models...')
-        processor = BatchProcessor(api_key=api_key, disable_ocr=disable_ocr)
-        
-        # Clear caches before processing
-        update_task(task_id, progress=18, message='Clearing caches...')
-        try:
-            processor.clear_all_caches()
-        except Exception as e:
-            logger.warning(f"Error clearing caches: {e}")
+        processor = BatchProcessor(disable_ocr=disable_ocr)
         
         # Process batch with progress callbacks
         update_task(task_id, progress=20, message=f'Processing {len(resume_paths)} resumes...')

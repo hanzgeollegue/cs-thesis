@@ -188,6 +188,10 @@
     transform: scale(1.02);
 }
 
+.file-upload-box {
+    position: relative;
+}
+
 .file-upload-box input[type="file"] {
     position: absolute;
     top: 0;
@@ -196,6 +200,8 @@
     height: 100%;
     opacity: 0;
     cursor: pointer;
+    z-index: 1;
+    font-size: 0;
 }
 
 .upload-icon {
@@ -348,41 +354,79 @@ document.addEventListener('DOMContentLoaded', function() {
     const results = document.getElementById('results');
     const error = document.getElementById('error');
     const errorText = document.getElementById('errorText');
+    
+    // Prevent multiple file chooser dialogs from opening in Chrome
+    let fileInputClickInProgress = false;
+    
+    // Store selected files separately so we don't lose them
+    let selectedFiles = [];
+    
+    // Intercept file input clicks to prevent multiple dialogs
+    fileInput.addEventListener('mousedown', function(e) {
+        if (fileInputClickInProgress) {
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+        }
+        fileInputClickInProgress = true;
+        // Reset after a short delay
+        setTimeout(() => {
+            fileInputClickInProgress = false;
+        }, 500);
+    });
 
     // Drag and drop functionality
     fileUploadBox.addEventListener('dragover', function(e) {
         e.preventDefault();
+        e.stopPropagation();
         fileUploadBox.classList.add('dragover');
     });
 
     fileUploadBox.addEventListener('dragleave', function(e) {
         e.preventDefault();
+        e.stopPropagation();
         fileUploadBox.classList.remove('dragover');
     });
 
     fileUploadBox.addEventListener('drop', function(e) {
         e.preventDefault();
+        e.stopPropagation();
         fileUploadBox.classList.remove('dragover');
         const files = e.dataTransfer.files;
         handleFiles(files);
     });
 
     fileInput.addEventListener('change', function(e) {
-        handleFiles(e.target.files);
+        const newFiles = Array.from(e.target.files);
+        if (newFiles.length > 0) {
+            handleFiles(newFiles);
+        }
     });
 
     function handleFiles(files) {
-        // Clear previous files
-        fileList.innerHTML = '';
+        // Add new files to selectedFiles array
+        const fileArray = Array.from(files);
         
-        if (files.length > 25) {
+        if (fileArray.length === 0) {
+            return;
+        }
+        
+        // Check total count
+        const totalFiles = selectedFiles.length + fileArray.length;
+        if (totalFiles > 25) {
             alert('Maximum 25 resumes allowed');
             return;
         }
 
-        Array.from(files).forEach(file => {
+        // Add valid PDF files
+        fileArray.forEach(file => {
             if (file.type === 'application/pdf') {
-                addFileToList(file);
+                // Check if file already exists (by name and size)
+                const exists = selectedFiles.some(f => f.name === file.name && f.size === file.size);
+                if (!exists) {
+                    selectedFiles.push(file);
+                    addFileToList(file);
+                }
             } else {
                 alert(`${file.name} is not a PDF file`);
             }
@@ -392,6 +436,8 @@ document.addEventListener('DOMContentLoaded', function() {
     function addFileToList(file) {
         const fileItem = document.createElement('div');
         fileItem.className = 'file-item';
+        fileItem.dataset.fileName = file.name;
+        fileItem.dataset.fileSize = file.size;
         fileItem.innerHTML = `
             <div>
                 <div class="file-name">${file.name}</div>
@@ -403,14 +449,21 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     window.removeFile = function(btn) {
-        btn.parentElement.remove();
+        const fileItem = btn.closest('.file-item');
+        if (fileItem) {
+            const fileName = fileItem.dataset.fileName;
+            const fileSize = parseInt(fileItem.dataset.fileSize);
+            // Remove from selectedFiles array
+            selectedFiles = selectedFiles.filter(f => !(f.name === fileName && f.size === fileSize));
+            fileItem.remove();
+        }
     };
 
     uploadForm.addEventListener('submit', async function(e) {
         e.preventDefault();
         
-        const files = fileInput.files;
-        if (files.length === 0) {
+        // Use stored selectedFiles instead of fileInput.files
+        if (selectedFiles.length === 0) {
             alert('Please select at least one resume file');
             return;
         }
@@ -425,8 +478,8 @@ document.addEventListener('DOMContentLoaded', function() {
         try {
             const formData = new FormData();
             
-            // Add files
-            Array.from(files).forEach(file => {
+            // Add files from selectedFiles array
+            selectedFiles.forEach(file => {
                 formData.append('resumes', file);
             });
 
@@ -483,7 +536,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             setTimeout(pollProgress, 2000);
                         }
                     } catch (pollError) {
-                        logger.error('Polling error:', pollError);
+                        console.error('Polling error:', pollError);
                         errorText.textContent = pollError.message || 'Error checking progress';
                         error.style.display = 'block';
                         loading.style.display = 'none';

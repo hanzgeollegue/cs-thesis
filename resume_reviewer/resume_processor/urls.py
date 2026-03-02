@@ -13,6 +13,9 @@ urlpatterns = [
     path('delete/<int:resume_id>/', views.delete_resume, name='delete_resume'),
     path('download-json/<int:resume_id>/', views.download_json, name='download_json'),
     path('ranking/', views.ranking_view, name='ranking'),
+    path('ranking-list/', views.ranking_list, name='ranking_list'),
     path('all-batches/', views.all_batches_view, name='all_batches'),
-    path('api/deterministic-ranking/', views.deterministic_ranking_api, name='deterministic_ranking'),
+    path('candidate/<str:candidate_id>/', views.candidate_detail, name='candidate_detail'),
+    path('export/json/', views.export_results_json, name='export_results_json'),
+    path('export/csv/', views.export_results_csv, name='export_results_csv'),
 ] 

@@ -3,525 +3,534 @@
 {% block title %}Resume Rankings{% endblock %}
 
 {% block content %}
-<div class="container">
-    <div class="header">
-        <h1>Resume Rankings</h1>
-        <p class="subtitle">AI-powered candidate evaluation and ranking</p>
-    </div>
+<div class="container results-page">
+    <header class="page-header">
+        <div>
+            <h1>Results</h1>
+            <p class="subtitle">Latest batch ranking overview</p>
+        </div>
+        {% if ranked_resumes %}
+        <div class="toolbar">
+            <div class="sort">
+                <label for="sort-select">Sort by</label>
+                <select id="sort-select" onchange="sortCandidates(this.value)">
+                    <option value="score">Final score</option>
+                    <option value="coverage">Coverage</option>
+                    <option value="semantic">Semantic</option>
+                    <option value="experience">Experience</option>
+                </select>
+            </div>
+            <div class="actions">
+                <a class="btn btn-secondary btn-xs" href="{% url 'resume_processor:all_batches' %}">All batches</a>
+                <button class="btn btn-outline btn-xs" onclick="exportResults(event)">Export</button>
+            </div>
+        </div>
+        {% endif %}
+    </header>
 
     {% if no_batches %}
-        <div class="no-resumes">
-            <div class="empty-state">
-                <h3>No Batch Processing Results</h3>
-                <p>No resumes have been processed in batch mode yet. Start by uploading some resumes!</p>
-                <a href="/" class="btn btn-primary">Go to Home</a>
-                <a href="/resume/upload/" class="btn btn-secondary">Single Upload</a>
+        <section class="empty-state" aria-live="polite">
+            <h2>No results yet</h2>
+            <p>Process a batch of resumes to see ranked candidates.</p>
+            <div class="empty-actions">
+                <a class="btn btn-primary" href="{% url 'home' %}">Go to dashboard</a>
+                <a class="btn btn-secondary" href="{% url 'resume_upload' %}">Upload resumes</a>
             </div>
-        </div>
+        </section>
     {% elif processing_error %}
-        <div class="error-state">
-            <h3>Processing Error</h3>
-            <p><strong>Error:</strong> {{ processing_error }}</p>
-            <div class="batch-info">
-                <h4>Batch Information</h4>
-                <p><strong>Job Description:</strong> {{ batch_info.job_description|truncatechars:100 }}</p>
-                <p><strong>Resume Count:</strong> {{ batch_info.resume_count }}</p>
-                <p><strong>Processed:</strong> {{ batch_info.timestamp|date:"M d, Y H:i" }}</p>
-            </div>
-            <a href="/" class="btn btn-primary">Try Again</a>
-        </div>
+        <section class="error-state">
+            <h2>Processing error</h2>
+            <p>{{ processing_error }}</p>
+            <a class="btn btn-primary btn-xs" href="{% url 'home' %}">Return home</a>
+        </section>
     {% else %}
-        <div class="batch-info-card">
-            <h3>Current Batch Results</h3>
-            <div class="batch-details">
-                <p><strong>Job Description:</strong> {{ batch_info.job_description|truncatechars:100 }}</p>
-                <p><strong>Resumes Processed:</strong> {{ batch_info.resume_count }}</p>
-                <p><strong>Processing Date:</strong> {{ batch_info.timestamp|date:"M d, Y H:i" }}</p>
-                <p><strong>Filenames:</strong> {{ batch_info.filenames|join:", " }}</p>
-            </div>
-            <div class="batch-actions" style="margin-top: 15px; text-align: center;">
-                <a href="/resume/all-batches/" class="btn btn-secondary">View All Batches</a>
-            </div>
-        </div>
-
-        <div class="stats-bar">
-            <div class="stat-item">
-                <span class="stat-number">{{ total_resumes }}</span>
-                <span class="stat-label">Total Resumes</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-number">{{ ranked_count }}</span>
-                <span class="stat-label">AI Ranked</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-number">{{ ranked_resumes|length }}</span>
-                <span class="stat-label">Ranking Position</span>
-            </div>
-        </div>
+        <section class="batch-summary">
+            <h2>Batch summary</h2>
+            <dl>
+                <div>
+                    <dt>Job description</dt>
+                    <dd>{{ batch_info.job_description|truncatechars:100 }}</dd>
+                </div>
+                <div>
+                    <dt>Resumes processed</dt>
+                    <dd>{{ batch_info.resume_count }}</dd>
+                </div>
+                <div>
+                    <dt>Processed</dt>
+                    <dd>{{ batch_info.timestamp|date:"M d, Y H:i" }}</dd>
+                </div>
+            </dl>
+        </section>
 
         {% if ranked_resumes %}
-            <div class="ranking-table">
-                <div class="table-header">
-                    <div class="header-rank">Rank</div>
-                    <div class="header-candidate">Candidate</div>
-                    <div class="header-score">Score</div>
-                    <div class="header-skills">Matched Skills</div>
-                    <div class="header-actions">Actions</div>
-                </div>
+        <section class="candidate-grid" aria-label="Candidate rankings">
+            {% for candidate in ranked_resumes %}
+            <article class="candidate-card" 
+                     data-rank="{{ candidate.rank|default:999 }}" 
+                     data-score="{{ candidate.ranking_score|default:0 }}" 
+                     data-coverage="{{ candidate.coverage_pct|default:0 }}"
+                     data-semantic="{{ candidate.scores.semantic_score|default:0 }}">
+                <header class="card-header">
+                    <div class="identity">
+                        <h2>{{ candidate.candidate_name|default:candidate.display_name }}</h2>
+                        <p>{{ candidate.meta.source_file|default:candidate.resume_id }}</p>
+                    </div>
+                    <div class="score-summary">
+                        {% if candidate.rank %}
+                            <span class="rank-badge">#{{ candidate.rank }}</span>
+                        {% endif %}
+                        <div class="score-group">
+                            <span class="score">{{ candidate.ranking_score|floatformat:1 }}</span>
+                            <span class="label">Final score</span>
+                        </div>
+                        <div class="score-group">
+                            <span class="score">{{ candidate.coverage_pct|default:"0.0" }}%</span>
+                            <span class="label">Coverage</span>
+                        </div>
+                    </div>
+                </header>
 
-                {% for ranking_info in ranked_resumes %}
-                <div class="ranking-row {% if ranking_info.has_ranking %}ranked{% else %}unranked{% endif %}">
-                    <div class="rank-number">
-                        {% if ranking_info.rank %}
-                            <span class="rank-badge">{{ ranking_info.rank }}</span>
-                        {% else %}
-                            <span class="unranked-badge">-</span>
+                <section class="metrics">
+                    <div>
+                        <span class="metric-label">Semantic</span>
+                        <span class="metric-value">{{ candidate.scores.semantic_score|floatformat:2 }}</span>
+                    </div>
+                    <div>
+                        <span class="metric-label">TF‑IDF</span>
+                        <span class="metric-value">{{ candidate.scores.tfidf_section_score|floatformat:2 }}</span>
+                    </div>
+                    <div>
+                        <span class="metric-label">Cross encoder</span>
+                        <span class="metric-value">{{ candidate.scores.cross_encoder|floatformat:2 }}</span>
+                    </div>
+                </section>
+
+                <section class="skills">
+                    <div>
+                        <span class="pill pill-good">Matched {{ candidate.matched_skills|length|default:0 }}</span>
+                        {% if candidate.scores.missing_skills %}
+                            <span class="pill pill-warn">Missing {{ candidate.scores.missing_skills|length }}</span>
                         {% endif %}
                     </div>
-                    
-                    <div class="candidate-info">
-                        <div class="candidate-name">{{ ranking_info.candidate_name|default:ranking_info.display_name }}</div>
-                        <div class="candidate-id">ID: {{ ranking_info.resume_id|truncatechars:20 }}</div>
-                        <div class="candidate-scores">
-                            {% if ranking_info.scores %}
-                                TF-IDF: {{ ranking_info.scores.tfidf_section_score|floatformat:2 }}, 
-                                Semantic: {{ ranking_info.scores.semantic_score|floatformat:2 }}
-                            {% endif %}
-                        </div>
-                    </div>
-                    
-                    <div class="ai-score">
-                        {% if ranking_info.has_ranking %}
-                            <div class="score-value">{{ ranking_info.ranking_score|floatformat:2 }}</div>
-                            {% if ranking_info.ranking_reason %}
-                                <div class="score-reason">
-                                    <details>
-                                        <summary>View Reasoning</summary>
-                                        <p>{{ ranking_info.ranking_reason }}</p>
-                                    </details>
-                                </div>
-                            {% endif %}
-                        {% else %}
-                            <span class="no-score">No AI ranking</span>
+                    <div class="skill-list">
+                        {% for skill in candidate.matched_skills|slice:":6" %}
+                            <span>{{ skill }}</span>
+                        {% endfor %}
+                        {% if candidate.matched_skills|length > 6 %}
+                            <span class="more">+{{ candidate.matched_skills|length|add:"-6" }} more</span>
                         {% endif %}
                     </div>
-                    
-                    <div class="matched-skills">
-                        {% if ranking_info.matched_skills %}
-                            <div class="skills-list">
-                                {% for skill in ranking_info.matched_skills|slice:":3" %}
-                                    <span class="skill-tag">{{ skill }}</span>
-                                {% endfor %}
-                                {% if ranking_info.matched_skills|length > 3 %}
-                                    <span class="skill-more">+{{ ranking_info.matched_skills|length|add:"-3" }} more</span>
-                                {% endif %}
-                            </div>
-                        {% else %}
-                            <span class="no-skills">No skills matched</span>
-                        {% endif %}
-                    </div>
-                    
-                    <div class="actions">
-                        <button onclick="showResumeDetails('{{ ranking_info.resume_id }}')" class="btn btn-sm btn-primary">View</button>
-                        <button onclick="showSkills('{{ ranking_info.resume_id }}')" class="btn btn-sm btn-secondary">Skills</button>
-                        <button onclick="showParsed('{{ ranking_info.resume_id }}')" class="btn btn-sm btn-info">Data</button>
-                    </div>
-                </div>
-                
-                <!-- Hidden details sections -->
-                <div id="details-{{ ranking_info.resume_id }}" class="resume-details" style="display: none;">
-                    <div class="details-content">
-                        <h4>Resume Details for {{ ranking_info.display_name }}</h4>
-                        <div class="details-grid">
-                            <div class="detail-section">
-                                <h5>Skills</h5>
-                                <p>{{ ranking_info.parsed.skills|default:"No skills section" }}</p>
-                            </div>
-                            <div class="detail-section">
-                                <h5>Experience</h5>
-                                <p>{{ ranking_info.parsed.experience|default:"No experience section" }}</p>
-                            </div>
-                            <div class="detail-section">
-                                <h5>Education</h5>
-                                <p>{{ ranking_info.parsed.education|default:"No education section" }}</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
+                </section>
+
+                {% if candidate.ranking_reason %}
+                <section class="analysis-preview">
+                    <h3>Analysis summary</h3>
+                    <p>{{ candidate.ranking_reason|truncatewords:30 }}</p>
+                </section>
+                {% endif %}
+
+                <footer class="card-footer">
+                    <a class="btn btn-primary btn-xs" href="{% url 'resume_processor:candidate_detail' candidate.resume_id %}">View details</a>
+                </footer>
+            </article>
+            {% endfor %}
+        </section>
         {% else %}
-            <div class="no-resumes">
-                <div class="empty-state">
-                    <h3>No Resumes in This Batch</h3>
-                    <p>No resumes were successfully processed in this batch.</p>
-                    <a href="/" class="btn btn-primary">Process New Batch</a>
-                </div>
-            </div>
+            <section class="empty-state">
+                <h2>No candidates</h2>
+                <p>No resumes were successfully processed in this batch.</p>
+            </section>
         {% endif %}
     {% endif %}
 </div>
 
 <style>
-    .container {
-        max-width: 1200px;
-        margin: 0 auto;
-        padding: 20px;
-    }
+.results-page {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
 
-    .header {
-        text-align: center;
-        margin-bottom: 30px;
-    }
+.page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 16px;
+}
 
-    .header h1 {
-        color: #2c3e50;
-        margin-bottom: 10px;
-    }
+.page-header h1 {
+    margin-bottom: 4px;
+    font-size: clamp(1.75rem, 1.8vw, 2.2rem);
+}
 
-    .subtitle {
-        color: #7f8c8d;
-        font-size: 1.1rem;
-    }
+.subtitle {
+    color: #6b7280;
+    font-size: 0.95rem;
+}
 
-    .batch-info-card {
-        background: #e3f2fd;
-        border: 1px solid #2196f3;
-        border-radius: 10px;
-        padding: 20px;
-        margin-bottom: 30px;
-    }
+.toolbar {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+}
 
-    .batch-info-card h3 {
-        color: #1976d2;
-        margin-bottom: 15px;
-    }
+.toolbar .sort {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    font-size: 0.9rem;
+}
 
-    .batch-details p {
-        margin: 5px 0;
-        color: #424242;
-    }
+.toolbar select {
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid #d1d5db;
+    background: #fff;
+    font-size: 0.9rem;
+}
 
-    .error-state {
-        background: #ffebee;
-        border: 1px solid #f44336;
-        border-radius: 10px;
-        padding: 20px;
-        text-align: center;
-        margin-bottom: 30px;
-    }
+.toolbar .actions {
+    display: flex;
+    gap: 8px;
+}
 
-    .error-state h3 {
-        color: #d32f2f;
-        margin-bottom: 15px;
-    }
+.btn-xs {
+    font-size: 0.75rem;
+    padding: 6px 12px;
+}
 
-    .stats-bar {
-        display: flex;
-        justify-content: space-around;
-        background: #f8f9fa;
-        border-radius: 10px;
-        padding: 20px;
-        margin-bottom: 30px;
-    }
+.btn-outline {
+    border: 1px solid #3b82f6;
+    color: #3b82f6;
+    background: transparent;
+}
 
-    .stat-item {
-        text-align: center;
-    }
+.btn-outline:hover {
+    background: #3b82f6;
+    color: #fff;
+}
 
-    .stat-number {
-        display: block;
-        font-size: 2rem;
-        font-weight: bold;
-        color: #007bff;
-    }
+.empty-state {
+    text-align: center;
+    padding: 64px 24px;
+    background: #f9fafb;
+    border-radius: 16px;
+}
 
-    .stat-label {
-        color: #6c757d;
-        font-size: 0.9rem;
-    }
+.empty-state h2 {
+    margin-bottom: 8px;
+    color: #111827;
+}
 
-    .ranking-table {
-        background: white;
-        border-radius: 10px;
-        overflow: hidden;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-    }
+.empty-state p {
+    margin-bottom: 24px;
+    color: #6b7280;
+}
 
-    .table-header {
-        display: grid;
-        grid-template-columns: 80px 2fr 1fr 1fr 1fr;
-        background: #343a40;
-        color: white;
-        padding: 15px;
-        font-weight: 600;
-    }
+.empty-actions {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
 
-    .ranking-row {
-        display: grid;
-        grid-template-columns: 80px 2fr 1fr 1fr 1fr;
-        padding: 15px;
-        border-bottom: 1px solid #e9ecef;
-        align-items: center;
-        transition: background-color 0.2s;
-    }
+.batch-summary {
+    background: linear-gradient(135deg, #eff6ff, #ffffff);
+    border: 1px solid #bfdbfe;
+    border-radius: 16px;
+    padding: 24px;
+}
 
-    .ranking-row:hover {
-        background-color: #f8f9fa;
-    }
+.batch-summary h2 {
+    font-size: 1rem;
+    color: #1d4ed8;
+    margin-bottom: 16px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
 
-    .ranking-row.ranked {
-        background-color: #f8fff8;
-    }
+.batch-summary dl {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+}
 
-    .ranking-row.unranked {
-        background-color: #fff8f8;
-    }
+.batch-summary dt {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    color: #6b7280;
+    letter-spacing: 0.08em;
+}
 
-    .rank-number {
-        text-align: center;
-    }
+.batch-summary dd {
+    margin: 4px 0 0;
+    color: #1f2937;
+    font-weight: 600;
+}
 
-    .rank-badge {
-        background: #007bff;
-        color: white;
-        padding: 5px 10px;
-        border-radius: 15px;
-        font-weight: bold;
-        font-size: 0.9rem;
-    }
+.candidate-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 20px;
+}
 
-    .unranked-badge {
-        color: #6c757d;
-        font-size: 1.2rem;
-    }
+.candidate-card {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 20px;
+    padding: 20px;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+}
 
-    .candidate-info {
-        padding-right: 15px;
-    }
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+}
 
-    .candidate-name {
-        font-weight: 600;
-        color: #2c3e50;
-        margin-bottom: 5px;
-    }
+.identity h2 {
+    font-size: 1.15rem;
+    margin-bottom: 4px;
+    color: #111827;
+}
 
-    .candidate-id {
-        color: #6c757d;
-        font-size: 0.8rem;
-        margin-bottom: 3px;
-    }
+.identity p {
+    color: #6b7280;
+    font-size: 0.8rem;
+    word-break: break-all;
+}
 
-    .candidate-scores {
-        color: #95a5a6;
-        font-size: 0.8rem;
-    }
+.score-summary {
+    display: grid;
+    grid-auto-flow: column;
+    gap: 12px;
+    align-items: flex-end;
+}
 
-    .ai-score {
-        text-align: center;
-    }
+.score-group {
+    text-align: right;
+}
 
-    .score-value {
-        font-size: 1.5rem;
-        font-weight: bold;
-        color: #28a745;
-        margin-bottom: 5px;
-    }
+.score-group .score {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: #0f766e;
+}
 
-    .score-reason {
-        font-size: 0.8rem;
-    }
+.score-group .label {
+    display: block;
+    font-size: 0.7rem;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
 
-    .score-reason summary {
-        cursor: pointer;
-        color: #007bff;
-    }
+.rank-badge {
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #1f2937;
+    background: #facc15;
+}
 
-    .score-reason p {
-        margin-top: 5px;
-        padding: 10px;
-        background: #f8f9fa;
-        border-radius: 5px;
-        font-size: 0.8rem;
-        line-height: 1.4;
-    }
+.metrics {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
 
-    .no-score {
-        color: #6c757d;
-        font-style: italic;
-    }
+.metrics > div {
+    flex: 1 1 100px;
+    background: #f1f5f9;
+    border-radius: 12px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
 
-    .matched-skills {
-        text-align: center;
-    }
+.metric-label {
+    font-size: 0.75rem;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
 
-    .skills-list {
-        display: flex;
+.metric-value {
+    font-weight: 700;
+    color: #1f2937;
+}
+
+.skills {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.pill-good {
+    color: #14532d;
+    background: #dcfce7;
+}
+
+.pill-warn {
+    color: #92400e;
+    background: #fef3c7;
+}
+
+.skill-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.skill-list span {
+    padding: 4px 8px;
+    background: #f8fafc;
+    border-radius: 8px;
+    font-size: 0.75rem;
+    color: #1f2937;
+}
+
+.skill-list .more {
+    color: #2563eb;
+    background: #eff6ff;
+}
+
+.analysis-preview {
+    background: #f8fafc;
+    border-radius: 14px;
+    padding: 16px;
+    color: #334155;
+}
+
+.analysis-preview h3 {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    color: #64748b;
+    letter-spacing: 0.08em;
+    margin-bottom: 6px;
+}
+
+.analysis-preview p {
+    font-size: 0.9rem;
+    line-height: 1.45;
+    margin: 0;
+}
+
+.card-footer {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.card-footer .btn {
+    min-width: 110px;
+}
+
+@media (max-width: 900px) {
+    .page-header {
         flex-direction: column;
-        gap: 3px;
-        align-items: center;
+        align-items: flex-start;
     }
 
-    .skill-tag {
-        background: #e3f2fd;
-        color: #1976d2;
-        padding: 2px 8px;
-        border-radius: 12px;
-        font-size: 0.7rem;
-        font-weight: 500;
+    .toolbar {
+        width: 100%;
+        justify-content: space-between;
     }
 
-    .skill-more {
-        color: #6c757d;
-        font-size: 0.7rem;
-        font-style: italic;
+    .candidate-card {
+        padding: 16px;
     }
 
-    .no-skills {
-        color: #6c757d;
-        font-style: italic;
-        font-size: 0.8rem;
+    .score-summary {
+        grid-auto-flow: row;
+        text-align: right;
+    }
+}
+
+@media (max-width: 600px) {
+    .toolbar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
     }
 
-    .actions {
-        display: flex;
-        gap: 5px;
-        justify-content: center;
+    .toolbar .actions {
+        justify-content: flex-start;
     }
 
-    .btn {
-        padding: 6px 12px;
-        border: none;
-        border-radius: 5px;
-        text-decoration: none;
-        font-weight: 600;
-        cursor: pointer;
-        transition: all 0.3s ease;
-        font-size: 0.8rem;
+    .candidate-grid {
+        grid-template-columns: 1fr;
     }
 
-    .btn-primary {
-        background: #007bff;
-        color: white;
+    .card-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
     }
 
-    .btn-primary:hover {
-        background: #0056b3;
+    .metrics {
+        flex-direction: column;
     }
-
-    .btn-secondary {
-        background: #6c757d;
-        color: white;
-    }
-
-    .btn-secondary:hover {
-        background: #545b62;
-    }
-
-    .btn-info {
-        background: #17a2b8;
-        color: white;
-    }
-
-    .btn-info:hover {
-        background: #117a8b;
-    }
-
-    .resume-details {
-        background: #f8f9fa;
-        border-top: 1px solid #e9ecef;
-        padding: 20px;
-    }
-
-    .details-content h4 {
-        color: #2c3e50;
-        margin-bottom: 15px;
-    }
-
-    .details-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-        gap: 20px;
-    }
-
-    .detail-section h5 {
-        color: #495057;
-        margin-bottom: 8px;
-        font-size: 0.9rem;
-    }
-
-    .detail-section p {
-        color: #6c757d;
-        font-size: 0.85rem;
-        line-height: 1.4;
-        background: white;
-        padding: 10px;
-        border-radius: 5px;
-        border-left: 3px solid #007bff;
-    }
-
-    .no-resumes {
-        text-align: center;
-        padding: 60px 20px;
-    }
-
-    .empty-state h3 {
-        color: #6c757d;
-        margin-bottom: 15px;
-    }
-
-    .empty-state p {
-        color: #95a5a6;
-        margin-bottom: 25px;
-    }
-
-    .empty-state .btn {
-        margin: 0 10px;
-        padding: 12px 24px;
-        font-size: 1rem;
-    }
-
-    @media (max-width: 768px) {
-        .table-header,
-        .ranking-row {
-            grid-template-columns: 60px 1fr 80px 80px 80px;
-            font-size: 0.8rem;
-        }
-
-        .candidate-id,
-        .candidate-scores {
-            display: none;
-        }
-
-        .actions {
-            flex-direction: column;
-            gap: 3px;
-        }
-    }
+}
 </style>
 
 <script>
-    function showResumeDetails(resumeId) {
-        const detailsDiv = document.getElementById(`details-${resumeId}`);
-        if (detailsDiv) {
-            detailsDiv.style.display = detailsDiv.style.display === 'none' ? 'block' : 'none';
-        }
-    }
+(function() {
+    const grid = document.querySelector('.candidate-grid');
+    if (!grid) return;
 
-    function showSkills(resumeId) {
-        // Toggle skills display
-        const detailsDiv = document.getElementById(`details-${resumeId}`);
-        if (detailsDiv) {
-            detailsDiv.style.display = detailsDiv.style.display === 'none' ? 'block' : 'none';
-        }
-    }
+    const valueFor = (card, key) => {
+        const raw = card?.dataset?.[key];
+        return raw ? Number(raw) : 0;
+    };
 
-    function showParsed(resumeId) {
-        // Toggle parsed data display
-        const detailsDiv = document.getElementById(`details-${resumeId}`);
-        if (detailsDiv) {
-            detailsDiv.style.display = detailsDiv.style.display === 'none' ? 'block' : 'none';
+    const sortSelectors = {
+        score: card => valueFor(card, 'score'),
+        coverage: card => valueFor(card, 'coverage'),
+        semantic: card => {
+            const scoreEl = card.querySelector('.metric-value');
+            return scoreEl ? parseFloat(scoreEl.textContent) || 0 : 0;
+        },
+        experience: card => {
+            const expEl = card.querySelector('[data-experience]');
+            return expEl ? parseFloat(expEl.dataset.experience) || 0 : 0;
         }
-    }
+    };
+
+    window.sortCandidates = function(metric) {
+        if (!grid) return;
+        const selector = sortSelectors[metric] || sortSelectors.score;
+        const cards = Array.from(grid.children);
+        
+        cards.sort((a, b) => {
+            const aVal = selector(a);
+            const bVal = selector(b);
+            return bVal - aVal; // Descending
+        });
+        
+        cards.forEach(card => grid.appendChild(card));
+    };
+
+    window.exportResults = function(event) {
+        if (event) event.preventDefault();
+        // Export functionality placeholder
+        console.log('Export functionality to be implemented');
+    };
+})();
 </script>
 {% endblock %}
+

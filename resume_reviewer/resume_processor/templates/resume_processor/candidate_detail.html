@@ -1,0 +1,1445 @@
+{% extends 'resume_processor/base.html' %}
+
+{% block title %}{{ candidate.name }} - Candidate Details{% endblock %}
+
+{% block content %}
+<div class="candidate-detail-section">
+    <!-- Header -->
+    <div class="candidate-header">
+        <div class="header-top">
+            <h1 class="candidate-name">{{ candidate.name }}</h1>
+            <div class="header-badges">
+                <span class="rank-badge" aria-label="Rank {{ candidate.rank }}">#{{ candidate.rank }}</span>
+                <span class="score-badge" aria-label="Match score {{ candidate.final_score_pct }} percent">{{ candidate.final_score_pct }}%</span>
+            </div>
+        </div>
+        <div class="header-bottom">
+            <div class="score-meter">
+                <label for="score-meter-{{ candidate.id }}" class="sr-only">Final match score</label>
+                <meter id="score-meter-{{ candidate.id }}" 
+                       value="{{ candidate.final_score_pct }}" 
+                       min="0" 
+                       max="100" 
+                       aria-label="Final score: {{ candidate.final_score_pct }} percent">
+                    {{ candidate.final_score_pct }}%
+                </meter>
+            </div>
+        </div>
+    </div>
+
+    <!-- Breadcrumb -->
+    <div class="breadcrumb">
+        <a href="{% url 'home' %}">Home</a> > 
+        <a href="{% url 'ranking_list' %}">Results</a> > 
+        <span>{{ candidate.name }}</span>
+    </div>
+
+    <!-- Summary Badges -->
+    <div class="summary-badges">
+        {% if candidate.final_score_pct >= 80 %}
+            <span class="badge badge-excellent">Excellent Match</span>
+        {% elif candidate.final_score_pct >= 60 %}
+            <span class="badge badge-good">Good Match</span>
+        {% elif candidate.final_score_pct >= 40 %}
+            <span class="badge badge-moderate">Moderate Match</span>
+        {% else %}
+            <span class="badge badge-low">Low Match</span>
+        {% endif %}
+        
+        {% if candidate.experience %}
+            <span class="badge badge-experience">Has Experience</span>
+        {% else %}
+            <span class="badge badge-no-experience">No Experience</span>
+        {% endif %}
+    </div>
+
+    <!-- Metrics Grid -->
+    <div class="metrics-section">
+        <h2>Match Metrics</h2>
+        <dl class="metrics-grid">
+            <div class="metric-item">
+                <dt>Skills Match</dt>
+                <dd>{{ candidate.skills_matched }}/{{ candidate.skills_required }}</dd>
+            </div>
+            <div class="metric-item">
+                <dt>Coverage</dt>
+                <dd>{{ candidate.coverage_pct }}%</dd>
+            </div>
+            {% if candidate.content_relevance_label and candidate.content_relevance_label != "N/A" %}
+            <div class="metric-item">
+                <dt>Content Relevance</dt>
+                <dd>{{ candidate.content_relevance_label }}</dd>
+            </div>
+            {% endif %}
+            {% if candidate.keyword_match_label and candidate.keyword_match_label != "N/A" %}
+            <div class="metric-item">
+                <dt>Keyword Match</dt>
+                <dd>{{ candidate.keyword_match_label }}</dd>
+            </div>
+            {% endif %}
+        </dl>
+    </div>
+
+    <!-- Skills Section -->
+    <div class="skills-section">
+        <h2>Skills Analysis</h2>
+        
+        <!-- Matched Skills -->
+        <div class="skill-group">
+            <div class="skill-group-header">
+                <span class="skill-group-icon">✅</span>
+                <span class="skill-group-label">Matched Skills ({{ candidate.matched_skills|length }})</span>
+            </div>
+            <div class="skill-chips">
+                {% if candidate.matched_skills_with_proficiency %}
+                    {% for skill_obj in candidate.matched_skills_with_proficiency %}
+                        {% if skill_obj.level %}
+                            <span class="skill-chip matched" title="Proficiency: {{ skill_obj.level }}">
+                                {{ skill_obj.skill_id }} ({{ skill_obj.level }})
+                            </span>
+                        {% else %}
+                            <span class="skill-chip matched">{{ skill_obj.skill_id }}</span>
+                        {% endif %}
+                    {% endfor %}
+                {% elif candidate.matched_skills %}
+                    {% for skill in candidate.matched_skills %}
+                        <span class="skill-chip matched">{{ skill }}</span>
+                    {% endfor %}
+                {% else %}
+                    <span class="no-skills">No matched skills</span>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Missing Skills -->
+        {% if candidate.missing_skills %}
+        <div class="skill-group">
+            <div class="skill-group-header">
+                <span class="skill-group-icon">⚠️</span>
+                <span class="skill-group-label">Missing Skills ({{ candidate.missing_skills|length }})</span>
+            </div>
+            <div class="skill-chips">
+                {% for skill in candidate.missing_skills %}
+                    <span class="skill-chip missing">{{ skill }}</span>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Experience Section -->
+    <div class="section-card">
+        <h2>Work Experience</h2>
+        {% if candidate.experience_items %}
+            <div class="experience-timeline">
+                {% for exp in candidate.experience_items %}
+                <div class="experience-item">
+                    <div class="experience-header">
+                        <div>
+                            <h3 class="experience-title">{{ exp.title|default:"Position" }}</h3>
+                            <span class="experience-company">{{ exp.company|default:"Company" }}</span>
+                        </div>
+                        <div class="experience-dates">
+                            {% if exp.dates %}
+                                {{ exp.dates }}
+                            {% elif exp.start_date and exp.end_date %}
+                                {{ exp.start_date }} - {{ exp.end_date }}
+                            {% elif exp.start_date %}
+                                {{ exp.start_date }} - Present
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% if exp.bullets %}
+                    <ul class="experience-bullets">
+                        {% for bullet in exp.bullets %}
+                            <li>{{ bullet }}</li>
+                        {% endfor %}
+                    </ul>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="empty-state">
+                <p>No work experience provided.</p>
+            </div>
+        {% endif %}
+    </div>
+
+    <!-- Projects Section -->
+    <div class="section-card">
+        <h2>Projects</h2>
+        {% if candidate.projects %}
+            <div class="projects-grid">
+                {% for project in candidate.projects %}
+                <div class="project-card">
+                    <h3 class="project-name">{{ project.name|default:"Project" }}</h3>
+                    {% if project.summary %}
+                        <p class="project-summary">{{ project.summary }}</p>
+                    {% endif %}
+                    {% if project.bullets %}
+                    <ul class="project-bullets">
+                        {% for bullet in project.bullets %}
+                            <li>{{ bullet }}</li>
+                        {% endfor %}
+                    </ul>
+                    {% endif %}
+                    {% if project.technologies %}
+                        <div class="project-tech">
+                            {% for tech in project.technologies %}
+                                <span class="tech-chip">{{ tech }}</span>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="empty-state">
+                <p>No projects provided.</p>
+            </div>
+        {% endif %}
+    </div>
+
+    <!-- Education Section -->
+    <div class="section-card">
+        <h2>Education</h2>
+        {% if candidate.education %}
+            <div class="education-list">
+                {% for edu in candidate.education %}
+                <div class="education-item">
+                    <div class="education-content">
+                        <div>
+                            {% if edu.degree %}
+                                <h3 class="education-degree">{{ edu.degree }}</h3>
+                            {% endif %}
+                            {% if edu.school %}
+                                <span class="education-school">{{ edu.school }}</span>
+                            {% endif %}
+                        </div>
+                        {% if edu.year %}
+                            <span class="education-year">{{ edu.year }}</span>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="empty-state">
+                <p>No education information provided.</p>
+            </div>
+        {% endif %}
+    </div>
+
+    <!-- Analysis Section -->
+    <div class="analysis-section">
+        <h2>Detailed Analysis</h2>
+        
+        <!-- Quick Facts (bullets) -->
+        {% if candidate.analysis_bullets %}
+        <div class="quick-facts">
+            <h3>Key Facts</h3>
+            <ul class="bullet-list">
+                {% for bullet in candidate.analysis_bullets %}
+                <li>{{ bullet }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+        
+        <!-- Score Breakdown and Narrative -->
+        <details class="analysis-details">
+            <summary>View Full Analysis</summary>
+            <div class="analysis-content">
+                <!-- Score Breakdown Section -->
+                {% if candidate.score_breakdown %}
+                <div class="score-breakdown-section">
+                    <h3>Score Breakdown</h3>
+                    
+                    {% if candidate.score_breakdown.explanation %}
+                    <div class="breakdown-explanation">
+                        <p>{{ candidate.score_breakdown.explanation }}</p>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Signal Scores -->
+                    {% if candidate.score_breakdown.signal_scores %}
+                    <div class="signal-scores-grid">
+                        <div class="signal-card">
+                            <h4>Cross-Encoder</h4>
+                            <div class="signal-value">{{ candidate.score_breakdown.signal_scores.cross_encoder.normalized|floatformat:3 }}</div>
+                            <div class="signal-details">
+                                <span class="signal-weight">Weight: {% widthratio candidate.score_breakdown.signal_scores.cross_encoder.weight 1 100 %}%</span>
+                                <span class="signal-contribution">Contribution: {{ candidate.score_breakdown.signal_scores.cross_encoder.contribution|floatformat:3 }}</span>
+                            </div>
+                            <p class="signal-description">{{ candidate.score_breakdown.signal_scores.cross_encoder.description }}</p>
+                            {% if candidate.score_breakdown.signal_scores.cross_encoder.raw %}
+                            <div class="signal-raw">Raw score: {{ candidate.score_breakdown.signal_scores.cross_encoder.raw|floatformat:3 }}</div>
+                            {% endif %}
+                        </div>
+                        
+                        <div class="signal-card">
+                            <h4>SBERT</h4>
+                            <div class="signal-value">{{ candidate.score_breakdown.signal_scores.sbert.normalized|floatformat:3 }}</div>
+                            <div class="signal-details">
+                                <span class="signal-weight">Weight: {% widthratio candidate.score_breakdown.signal_scores.sbert.weight 1 100 %}%</span>
+                                <span class="signal-contribution">Contribution: {{ candidate.score_breakdown.signal_scores.sbert.contribution|floatformat:3 }}</span>
+                            </div>
+                            <p class="signal-description">{{ candidate.score_breakdown.signal_scores.sbert.description }}</p>
+                            {% if candidate.score_breakdown.signal_scores.sbert.raw %}
+                            <div class="signal-raw">Raw score: {{ candidate.score_breakdown.signal_scores.sbert.raw|floatformat:3 }}</div>
+                            {% endif %}
+                        </div>
+                        
+                        <div class="signal-card">
+                            <h4>TF-IDF</h4>
+                            <div class="signal-value">{{ candidate.score_breakdown.signal_scores.tfidf.normalized|floatformat:3 }}</div>
+                            <div class="signal-details">
+                                <span class="signal-weight">Weight: {% widthratio candidate.score_breakdown.signal_scores.tfidf.weight 1 100 %}%</span>
+                                <span class="signal-contribution">Contribution: {{ candidate.score_breakdown.signal_scores.tfidf.contribution|floatformat:3 }}</span>
+                            </div>
+                            <p class="signal-description">{{ candidate.score_breakdown.signal_scores.tfidf.description }}</p>
+                            {% if candidate.score_breakdown.signal_scores.tfidf.raw %}
+                            <div class="signal-raw">Raw score: {{ candidate.score_breakdown.signal_scores.tfidf.raw|floatformat:3 }}</div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Base Composite -->
+                    <div class="composite-calculation">
+                        <h4>Base Composite Score</h4>
+                        <div class="composite-formula">
+                            (0.5 × SBERT) + (0.3 × Cross-Encoder) + (0.2 × TF-IDF) = 
+                            <strong>{{ candidate.score_breakdown.base_composite|floatformat:3 }}</strong>
+                        </div>
+                    </div>
+                    
+                    <!-- Coverage Analysis -->
+                    {% if candidate.score_breakdown.coverage_analysis %}
+                    <div class="coverage-analysis">
+                        <h4>Skills Coverage</h4>
+                        <div class="coverage-stats">
+                            <span class="coverage-value">{% widthratio candidate.score_breakdown.coverage_analysis.coverage 1 100 %}%</span>
+                            <span class="coverage-detail">
+                                {{ candidate.score_breakdown.coverage_analysis.matched_count }}/{{ candidate.score_breakdown.coverage_analysis.total_required }} required skills matched
+                            </span>
+                        </div>
+                        {% if candidate.score_breakdown.coverage_analysis.missing_skills %}
+                        <div class="missing-skills">
+                            <strong>Missing skills:</strong> {{ candidate.score_breakdown.coverage_analysis.missing_skills|join:", " }}
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Gates Applied -->
+                    {% if candidate.score_breakdown.gates_applied %}
+                    <div class="gates-applied">
+                        <h4>Penalties Applied</h4>
+                        {% for gate in candidate.score_breakdown.gates_applied %}
+                        <div class="gate-item">
+                            <strong>{{ gate.reason }}</strong>
+                            <span class="gate-penalty">{{ gate.penalty }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Final Score -->
+                    <div class="final-score-display">
+                        <h4>Final Score</h4>
+                        <div class="final-score-value">{{ candidate.score_breakdown.final_score|floatformat:3 }} ({% widthratio candidate.score_breakdown.final_score 1 100 %}%)</div>
+                    </div>
+                </div>
+                {% endif %}
+                
+                <!-- Narrative Analysis Text -->
+                <div class="analysis-narrative">
+                    <h3>Detailed Analysis</h3>
+                    <p>{{ candidate.analysis_text }}</p>
+                </div>
+            </div>
+        </details>
+        
+        <!-- Analysis Facts Section -->
+        {% if candidate.analysis_facts %}
+        <details class="analysis-facts">
+            <summary>View Analysis Facts (Audit Trail)</summary>
+            <div class="facts-content">
+                <div class="facts-grid">
+                    <!-- Scores -->
+                    {% if candidate.analysis_facts.scores %}
+                    <div class="fact-group">
+                        <h4>Scores</h4>
+                        <ul>
+                            <li>Final Score: {{ candidate.analysis_facts.scores.final_score_percentage }}%</li>
+                            <li>Coverage: {{ candidate.analysis_facts.scores.coverage|floatformat:2 }}</li>
+                            <li>Has Match Skills: {{ candidate.analysis_facts.scores.has_match_skills|yesno:"Yes,No" }}</li>
+                            <li>Has Match Experience: {{ candidate.analysis_facts.scores.has_match_experience|yesno:"Yes,No" }}</li>
+                        </ul>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Skills -->
+                    {% if candidate.analysis_facts.skills %}
+                    <div class="fact-group">
+                        <h4>Skills Analysis</h4>
+                        <ul>
+                            <li>Matched Required: {{ candidate.analysis_facts.skills.matched_required|join:", " }}</li>
+                            <li>Matched Nice-to-Have: {{ candidate.analysis_facts.skills.matched_nice|join:", " }}</li>
+                            <li>Missing Required: {{ candidate.analysis_facts.skills.missing_required|join:", " }}</li>
+                            <li>Total Required: {{ candidate.analysis_facts.skills.total_required }}</li>
+                        </ul>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Experience -->
+                    {% if candidate.analysis_facts.experience %}
+                    <div class="fact-group">
+                        <h4>Experience</h4>
+                        <ul>
+                            <li>Role Count: {{ candidate.analysis_facts.experience.count }}</li>
+                            <li>Estimated Years: {{ candidate.analysis_facts.experience.total_years|floatformat:1 }}</li>
+                            <li>Top Roles: {{ candidate.analysis_facts.experience.top_roles|join:"; " }}</li>
+                        </ul>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Education -->
+                    {% if candidate.analysis_facts.education %}
+                    <div class="fact-group">
+                        <h4>Education</h4>
+                        <ul>
+                            <li>Degree Count: {{ candidate.analysis_facts.education.count }}</li>
+                            <li>Degrees: {{ candidate.analysis_facts.education.degrees|join:"; " }}</li>
+                        </ul>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Projects -->
+                    {% if candidate.analysis_facts.projects %}
+                    <div class="fact-group">
+                        <h4>Projects</h4>
+                        <ul>
+                            <li>Project Count: {{ candidate.analysis_facts.projects.count }}</li>
+                            <li>Top Projects: {{ candidate.analysis_facts.projects.top_projects|join:", " }}</li>
+                            <li>Technologies: {{ candidate.analysis_facts.projects.technologies|join:", " }}</li>
+                        </ul>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Metadata -->
+                    {% if candidate.analysis_facts.metadata %}
+                    <div class="fact-group">
+                        <h4>Metadata</h4>
+                        <ul>
+                            <li>Source File: {{ candidate.analysis_facts.metadata.source_file }}</li>
+                            <li>Parsing Quality: {{ candidate.analysis_facts.metadata.parsing_quality|title }}</li>
+                        </ul>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </details>
+        {% endif %}
+    </div>
+
+    <!-- Actions -->
+    <div class="actions-section">
+        <a href="{% url 'ranking_list' %}" class="btn btn-primary">← Back to Results</a>
+        <a href="{% url 'candidate_compare' %}?ids={{ candidate.id }}" class="btn btn-secondary">Compare</a>
+    </div>
+</div>
+
+<style>
+    /* CSS Variables for consistent styling */
+    :root {
+        --primary-color: #007bff;
+        --success-color: #28a745;
+        --warning-color: #ffc107;
+        --danger-color: #dc3545;
+        --light-color: #f8f9fa;
+        --dark-color: #343a40;
+        --border-radius: 8px;
+        --spacing-xs: 4px;
+        --spacing-sm: 8px;
+        --spacing-md: 12px;
+        --spacing-lg: 16px;
+        --spacing-xl: 20px;
+    }
+
+    .quick-facts {
+        background: var(--light-color);
+        border: 1px solid #e0e0e0;
+        border-radius: var(--border-radius);
+        padding: var(--spacing-lg);
+        margin-bottom: var(--spacing-lg);
+    }
+    
+    .quick-facts h3 {
+        margin: 0 0 var(--spacing-md) 0;
+        color: var(--dark-color);
+        font-size: 1.1em;
+    }
+    
+    .bullet-list {
+        margin: 0;
+        padding-left: var(--spacing-lg);
+    }
+    
+    .bullet-list li {
+        margin-bottom: var(--spacing-sm);
+        line-height: 1.4;
+    }
+
+    .candidate-detail-section {
+        max-width: 1000px;
+        margin: 0 auto;
+        padding: var(--spacing-xl);
+    }
+
+    /* Header */
+    .candidate-header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: var(--spacing-xl);
+        border-radius: var(--border-radius);
+        margin-bottom: var(--spacing-xl);
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+
+    .header-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: var(--spacing-lg);
+        flex-wrap: wrap;
+        gap: var(--spacing-md);
+    }
+
+    .candidate-name {
+        margin: 0;
+        font-size: 2.5rem;
+        font-weight: 700;
+        line-height: 1.2;
+        flex: 1;
+        min-width: 200px;
+    }
+
+    .header-badges {
+        display: flex;
+        gap: var(--spacing-md);
+        align-items: center;
+        flex-shrink: 0;
+    }
+
+    .rank-badge,
+    .score-badge {
+        background: rgba(255, 255, 255, 0.25);
+        padding: var(--spacing-sm) var(--spacing-lg);
+        border-radius: 24px;
+        font-weight: 600;
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        white-space: nowrap;
+        transition: background-color 0.2s ease;
+    }
+
+    .rank-badge {
+        font-size: 1rem;
+    }
+
+    .score-badge {
+        font-size: 1.5rem;
+        font-weight: 700;
+    }
+
+    .rank-badge:hover,
+    .score-badge:hover {
+        background: rgba(255, 255, 255, 0.35);
+    }
+
+    .header-bottom {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+
+    .score-meter {
+        width: 100%;
+        max-width: 400px;
+    }
+
+    .score-meter meter {
+        width: 100%;
+        height: 24px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.2);
+    }
+
+    .score-meter meter::-webkit-meter-bar {
+        background: rgba(255, 255, 255, 0.2);
+        border-radius: 12px;
+    }
+
+    .score-meter meter::-webkit-meter-optimum-value {
+        background: rgba(255, 255, 255, 0.9);
+        border-radius: 12px;
+    }
+
+    .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border-width: 0;
+    }
+
+    /* Breadcrumb */
+    .breadcrumb {
+        margin-bottom: var(--spacing-xl);
+        color: #6c757d;
+    }
+
+    .breadcrumb a {
+        color: var(--primary-color);
+        text-decoration: none;
+    }
+
+    .breadcrumb a:hover {
+        text-decoration: underline;
+    }
+
+    /* Summary Badges */
+    .summary-badges {
+        display: flex;
+        gap: var(--spacing-sm);
+        margin-bottom: var(--spacing-xl);
+        flex-wrap: wrap;
+    }
+
+    .badge {
+        padding: var(--spacing-sm) var(--spacing-md);
+        border-radius: 20px;
+        font-size: 0.9rem;
+        font-weight: 600;
+        border: 1px solid;
+    }
+
+    .badge-excellent {
+        background: #fff3e0;
+        color: #ef6c00;
+        border-color: #ffcc02;
+    }
+
+    .badge-good {
+        background: #e8f5e8;
+        color: #2e7d32;
+        border-color: #c8e6c9;
+    }
+
+    .badge-moderate {
+        background: #fff8e1;
+        color: #f57c00;
+        border-color: #ffecb3;
+    }
+
+    .badge-low {
+        background: #ffebee;
+        color: #c62828;
+        border-color: #ffcdd2;
+    }
+
+    .badge-experience {
+        background: #e8f5e8;
+        color: #2e7d32;
+        border-color: #c8e6c9;
+    }
+
+    .badge-no-experience {
+        background: #ffebee;
+        color: #c62828;
+        border-color: #ffcdd2;
+    }
+
+    /* Section Cards */
+    .section-card {
+        background: white;
+        border: 1px solid #e0e0e0;
+        border-radius: var(--border-radius);
+        padding: var(--spacing-xl);
+        margin-bottom: var(--spacing-xl);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    }
+
+    /* Section Headers */
+    h2 {
+        color: var(--dark-color);
+        border-bottom: 2px solid var(--primary-color);
+        padding-bottom: var(--spacing-sm);
+        margin-top: 0;
+        margin-bottom: var(--spacing-lg);
+        font-size: 1.5rem;
+    }
+
+    /* Metrics Section */
+    .metrics-section {
+        margin-bottom: var(--spacing-xl);
+    }
+
+    .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: var(--spacing-md);
+        background: var(--light-color);
+        padding: var(--spacing-lg);
+        border-radius: var(--border-radius);
+    }
+
+    .metric-item {
+        text-align: center;
+    }
+
+    .metric-item dt {
+        font-weight: 600;
+        color: var(--dark-color);
+        margin-bottom: var(--spacing-xs);
+    }
+
+    .metric-item dd {
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: var(--primary-color);
+        margin: 0;
+    }
+
+    /* Skills Section */
+    .skills-section {
+        margin-bottom: var(--spacing-xl);
+    }
+
+    .skill-group {
+        margin-bottom: var(--spacing-lg);
+    }
+
+    .skill-group-header {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+        margin-bottom: var(--spacing-sm);
+        font-weight: 600;
+        color: var(--dark-color);
+    }
+
+    .skill-group-icon {
+        font-size: 1.2rem;
+    }
+
+    .skill-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--spacing-sm);
+    }
+
+    .skill-chip {
+        padding: var(--spacing-xs) var(--spacing-md);
+        border-radius: 15px;
+        font-size: 0.9rem;
+        font-weight: 500;
+        border: 1px solid;
+    }
+
+    .skill-chip.matched {
+        background: #e8f5e8;
+        color: #2e7d32;
+        border-color: #c8e6c9;
+    }
+
+    .skill-chip.missing {
+        background: #ffebee;
+        color: #c62828;
+        border-color: #ffcdd2;
+    }
+
+    .no-skills {
+        color: #6c757d;
+        font-style: italic;
+    }
+
+    /* Experience Section */
+    .experience-section {
+        margin-bottom: var(--spacing-xl);
+    }
+
+    .experience-timeline {
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-lg);
+    }
+
+    .experience-item {
+        border-left: 3px solid var(--primary-color);
+        padding-left: var(--spacing-lg);
+    }
+
+    .experience-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: var(--spacing-md);
+        flex-wrap: wrap;
+        gap: var(--spacing-sm);
+    }
+
+    .experience-title {
+        margin: 0 0 var(--spacing-xs) 0;
+        color: var(--dark-color);
+        font-size: 1.25rem;
+        font-weight: 700;
+    }
+
+    .experience-company {
+        display: block;
+        color: #6c757d;
+        font-weight: 500;
+        font-size: 1rem;
+    }
+
+    .company {
+        font-weight: 600;
+        color: var(--dark-color);
+    }
+
+    .experience-dates {
+        color: #6c757d;
+        font-size: 0.9rem;
+        font-weight: 500;
+        white-space: nowrap;
+    }
+
+    .experience-description {
+        margin-bottom: var(--spacing-sm);
+    }
+
+    .experience-bullets {
+        list-style-type: disc;
+        margin: 0;
+        padding-left: var(--spacing-xl);
+    }
+
+    .experience-bullets li {
+        margin-bottom: var(--spacing-sm);
+        line-height: 1.6;
+        color: #495057;
+    }
+
+    /* Projects Section */
+    .projects-section {
+        margin-bottom: var(--spacing-xl);
+    }
+
+    .projects-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: var(--spacing-lg);
+    }
+
+    .project-card {
+        background: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: var(--border-radius);
+        padding: var(--spacing-lg);
+        transition: box-shadow 0.2s ease;
+    }
+
+    .project-card:hover {
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    }
+
+    .project-name {
+        margin: 0 0 var(--spacing-sm) 0;
+        color: var(--dark-color);
+        font-size: 1.15rem;
+        font-weight: 700;
+    }
+
+    .project-card h3 {
+        margin: 0 0 var(--spacing-sm) 0;
+        color: var(--primary-color);
+    }
+
+    .project-summary {
+        color: #495057;
+        line-height: 1.6;
+        margin-bottom: var(--spacing-md);
+        font-size: 0.95rem;
+    }
+
+    .project-bullets {
+        list-style-type: disc;
+        padding-left: var(--spacing-xl);
+        margin: 0 0 var(--spacing-md) 0;
+    }
+
+    .project-bullets li {
+        margin-bottom: var(--spacing-sm);
+        line-height: 1.6;
+        color: #495057;
+        font-size: 0.95rem;
+    }
+
+    .project-tech {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--spacing-xs);
+    }
+
+    .tech-chip {
+        background: white;
+        color: var(--primary-color);
+        padding: var(--spacing-xs) var(--spacing-sm);
+        border-radius: 12px;
+        font-size: 0.85rem;
+        border: 1px solid var(--primary-color);
+        font-weight: 500;
+    }
+
+    /* Education Section */
+    .education-section {
+        margin-bottom: var(--spacing-xl);
+    }
+
+    .education-list {
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-md);
+    }
+
+    .education-item {
+        border-left: 3px solid #28a745;
+        padding-left: var(--spacing-lg);
+    }
+
+    .education-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: var(--spacing-md);
+        flex-wrap: wrap;
+    }
+
+    .education-degree {
+        margin: 0 0 var(--spacing-xs) 0;
+        color: var(--dark-color);
+        font-size: 1.15rem;
+        font-weight: 700;
+    }
+
+    .education-school {
+        display: block;
+        color: #6c757d;
+        font-weight: 500;
+        font-size: 1rem;
+    }
+
+    .education-main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-xs);
+    }
+
+    .education-item h3 {
+        margin: 0;
+        color: var(--primary-color);
+        font-size: 1.1rem;
+    }
+
+    .school {
+        font-weight: 500;
+        color: var(--dark-color);
+        font-size: 0.95rem;
+    }
+
+    .education-year {
+        color: #6c757d;
+        font-size: 0.9rem;
+        font-weight: 500;
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+
+    .year {
+        color: #6c757d;
+        font-size: 0.9rem;
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+
+    /* Analysis Section */
+    .analysis-section {
+        margin-bottom: var(--spacing-xl);
+    }
+
+    .analysis-details {
+        border: 1px solid #e9ecef;
+        border-radius: var(--border-radius);
+        overflow: hidden;
+    }
+
+    .analysis-details summary {
+        padding: var(--spacing-md);
+        background: var(--light-color);
+        cursor: pointer;
+        font-weight: 600;
+        color: var(--primary-color);
+        border-bottom: 1px solid #e9ecef;
+    }
+
+    .analysis-details summary:hover {
+        background: #e9ecef;
+    }
+
+    .analysis-content {
+        padding: var(--spacing-lg);
+        background: white;
+    }
+
+    .analysis-content p {
+        margin: 0;
+        line-height: 1.6;
+        color: #495057;
+    }
+
+    /* Score Breakdown Section */
+    .score-breakdown-section {
+        margin-bottom: var(--spacing-xl);
+        padding-bottom: var(--spacing-xl);
+        border-bottom: 2px solid #e9ecef;
+    }
+
+    .score-breakdown-section h3 {
+        color: var(--dark-color);
+        font-size: 1.3rem;
+        margin-bottom: var(--spacing-lg);
+        border-bottom: 2px solid var(--primary-color);
+        padding-bottom: var(--spacing-sm);
+    }
+
+    .breakdown-explanation {
+        background: #f8f9fa;
+        border-left: 4px solid var(--primary-color);
+        padding: var(--spacing-md) var(--spacing-lg);
+        margin-bottom: var(--spacing-lg);
+        border-radius: var(--border-radius);
+    }
+
+    .breakdown-explanation p {
+        margin: 0;
+        line-height: 1.6;
+        color: #495057;
+    }
+
+    /* Signal Scores Grid */
+    .signal-scores-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: var(--spacing-lg);
+        margin-bottom: var(--spacing-xl);
+    }
+
+    .signal-card {
+        background: white;
+        border: 2px solid #e9ecef;
+        border-radius: var(--border-radius);
+        padding: var(--spacing-lg);
+        transition: all 0.2s ease;
+    }
+
+    .signal-card:hover {
+        border-color: var(--primary-color);
+        box-shadow: 0 4px 8px rgba(0, 123, 255, 0.1);
+    }
+
+    .signal-card h4 {
+        margin: 0 0 var(--spacing-md) 0;
+        color: var(--primary-color);
+        font-size: 1.1rem;
+        font-weight: 700;
+    }
+
+    .signal-value {
+        font-size: 2rem;
+        font-weight: 700;
+        color: var(--dark-color);
+        margin-bottom: var(--spacing-sm);
+    }
+
+    .signal-details {
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-xs);
+        margin-bottom: var(--spacing-md);
+        font-size: 0.9rem;
+        color: #6c757d;
+    }
+
+    .signal-weight,
+    .signal-contribution {
+        display: block;
+    }
+
+    .signal-description {
+        margin: var(--spacing-md) 0 0 0;
+        font-size: 0.9rem;
+        color: #495057;
+        line-height: 1.5;
+    }
+
+    .signal-raw {
+        margin-top: var(--spacing-sm);
+        font-size: 0.85rem;
+        color: #6c757d;
+        font-style: italic;
+    }
+
+    /* Composite Calculation */
+    .composite-calculation {
+        background: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: var(--border-radius);
+        padding: var(--spacing-lg);
+        margin-bottom: var(--spacing-lg);
+    }
+
+    .composite-calculation h4 {
+        margin: 0 0 var(--spacing-md) 0;
+        color: var(--primary-color);
+        font-size: 1rem;
+        font-weight: 600;
+    }
+
+    .composite-formula {
+        font-family: 'Courier New', monospace;
+        font-size: 1.1rem;
+        color: var(--dark-color);
+        padding: var(--spacing-md);
+        background: white;
+        border-radius: var(--border-radius);
+    }
+
+    .composite-formula strong {
+        color: var(--primary-color);
+        font-size: 1.2rem;
+    }
+
+    /* Coverage Analysis */
+    .coverage-analysis {
+        background: #e8f5e9;
+        border: 1px solid #c8e6c9;
+        border-radius: var(--border-radius);
+        padding: var(--spacing-lg);
+        margin-bottom: var(--spacing-lg);
+    }
+
+    .coverage-analysis h4 {
+        margin: 0 0 var(--spacing-md) 0;
+        color: #2e7d32;
+        font-size: 1rem;
+        font-weight: 600;
+    }
+
+    .coverage-stats {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-md);
+        margin-bottom: var(--spacing-sm);
+    }
+
+    .coverage-value {
+        font-size: 2rem;
+        font-weight: 700;
+        color: #2e7d32;
+    }
+
+    .coverage-detail {
+        font-size: 1rem;
+        color: #495057;
+    }
+
+    .missing-skills {
+        margin-top: var(--spacing-md);
+        padding-top: var(--spacing-md);
+        border-top: 1px solid #c8e6c9;
+        font-size: 0.95rem;
+        color: #495057;
+    }
+
+    .missing-skills strong {
+        color: #c62828;
+    }
+
+    /* Gates Applied */
+    .gates-applied {
+        background: #fff3e0;
+        border: 1px solid #ffcc02;
+        border-radius: var(--border-radius);
+        padding: var(--spacing-lg);
+        margin-bottom: var(--spacing-lg);
+    }
+
+    .gates-applied h4 {
+        margin: 0 0 var(--spacing-md) 0;
+        color: #ef6c00;
+        font-size: 1rem;
+        font-weight: 600;
+    }
+
+    .gate-item {
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-xs);
+        padding: var(--spacing-sm);
+        background: white;
+        border-radius: var(--border-radius);
+        margin-bottom: var(--spacing-sm);
+    }
+
+    .gate-item strong {
+        color: #ef6c00;
+    }
+
+    .gate-penalty {
+        color: #c62828;
+        font-size: 0.9rem;
+    }
+
+    /* Final Score Display */
+    .final-score-display {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border-radius: var(--border-radius);
+        padding: var(--spacing-xl);
+        text-align: center;
+    }
+
+    .final-score-display h4 {
+        margin: 0 0 var(--spacing-md) 0;
+        font-size: 1rem;
+        font-weight: 600;
+        opacity: 0.9;
+    }
+
+    .final-score-value {
+        font-size: 2.5rem;
+        font-weight: 700;
+    }
+
+    /* Analysis Narrative */
+    .analysis-narrative {
+        margin-top: var(--spacing-xl);
+        padding-top: var(--spacing-xl);
+        border-top: 2px solid #e9ecef;
+    }
+
+    .analysis-narrative h3 {
+        color: var(--dark-color);
+        font-size: 1.2rem;
+        margin-bottom: var(--spacing-md);
+    }
+
+    .analysis-narrative p {
+        line-height: 1.8;
+        color: #495057;
+    }
+
+    /* Analysis Facts */
+    .analysis-facts {
+        margin-top: var(--spacing-lg);
+        border: 1px solid #e9ecef;
+        border-radius: var(--border-radius);
+        overflow: hidden;
+    }
+
+    .analysis-facts summary {
+        padding: var(--spacing-md);
+        background: #f8f9fa;
+        cursor: pointer;
+        font-weight: 600;
+        color: #6c757d;
+        border-bottom: 1px solid #e9ecef;
+    }
+
+    .analysis-facts summary:hover {
+        background: #e9ecef;
+    }
+
+    .facts-content {
+        padding: var(--spacing-lg);
+        background: white;
+    }
+
+    .facts-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: var(--spacing-lg);
+    }
+
+    .fact-group {
+        background: #f8f9fa;
+        padding: var(--spacing-md);
+        border-radius: var(--border-radius);
+        border: 1px solid #e9ecef;
+    }
+
+    .fact-group h4 {
+        margin: 0 0 var(--spacing-sm) 0;
+        color: var(--primary-color);
+        font-size: 1rem;
+        font-weight: 600;
+    }
+
+    .fact-group ul {
+        margin: 0;
+        padding-left: var(--spacing-md);
+        list-style-type: disc;
+    }
+
+    .fact-group li {
+        margin-bottom: var(--spacing-xs);
+        line-height: 1.4;
+        color: #495057;
+        font-size: 0.9rem;
+    }
+
+    /* Actions Section */
+    .actions-section {
+        display: flex;
+        gap: var(--spacing-md);
+        justify-content: center;
+        margin-top: var(--spacing-xl);
+        padding-top: var(--spacing-xl);
+        border-top: 1px solid #e9ecef;
+    }
+
+    .btn {
+        padding: var(--spacing-md) var(--spacing-xl);
+        border: none;
+        border-radius: var(--border-radius);
+        text-decoration: none;
+        font-size: 1rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        display: inline-flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+    }
+
+    .btn-primary {
+        background: var(--primary-color);
+        color: white;
+    }
+
+    .btn-primary:hover {
+        background: #0056b3;
+        transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+        background: #6c757d;
+        color: white;
+    }
+
+    .btn-secondary:hover {
+        background: #545b62;
+        transform: translateY(-1px);
+    }
+
+    /* Empty States */
+    .empty-state {
+        text-align: center;
+        padding: var(--spacing-xl);
+        color: #6c757d;
+        background: var(--light-color);
+        border-radius: var(--border-radius);
+        border: 1px solid #e9ecef;
+    }
+
+    /* Responsive Design */
+    @media (max-width: 768px) {
+        .candidate-detail-section {
+            padding: var(--spacing-md);
+        }
+
+        .candidate-name {
+            font-size: 2rem;
+        }
+
+        .header-top {
+            flex-direction: column;
+            align-items: flex-start;
+            text-align: left;
+        }
+
+        .header-badges {
+            width: 100%;
+            justify-content: flex-start;
+        }
+
+        .score-meter {
+            max-width: 100%;
+        }
+
+        .metrics-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
+
+        .projects-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .education-item {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: var(--spacing-sm);
+        }
+
+        .actions-section {
+            flex-direction: column;
+        }
+    }
+
+    @media (max-width: 480px) {
+        .candidate-name {
+            font-size: 1.5rem;
+        }
+
+        .header-badges {
+            flex-direction: column;
+            width: 100%;
+            gap: var(--spacing-sm);
+        }
+
+        .rank-badge,
+        .score-badge {
+            width: 100%;
+            text-align: center;
+        }
+
+        .metrics-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .experience-header {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+    }
+</style>
+{% endblock %}

@@ -11,7 +11,6 @@ from .models import Resume
 from .enhanced_pdf_parser import PDFParser
 from .batch_processor import BatchProcessor
 from .jd_criteria import parse_criteria_from_post, build_jd_text
-from .config import get_llm_config, validate_config
 from .async_processor import start_batch_processing_async, get_task
 
 logger = logging.getLogger(__name__)
@@ -102,16 +101,6 @@ def resume_upload(request):
             
             disable_ocr_flag = request.POST.get('disable_ocr', '') in ['1', 'true', 'on', 'yes']
             logger.info(f"OCR disabled: {disable_ocr_flag}")
-            
-            # Get API key from provider-agnostic configuration
-            llm_cfg = get_llm_config()
-            api_key = llm_cfg['api_key']
-            logger.info(f"API key configured: {bool(api_key)}")
-            
-            # Check configuration status
-            config_issues = validate_config()
-            if config_issues:
-                logger.warning("Configuration issues detected: %s", config_issues)
             
             # Save uploaded files to temporary paths
             temp_paths = []
@@ -636,6 +625,8 @@ def candidate_detail(request, candidate_id):
             'matched_skills': matched_skills,  # For backward compatibility
             'matched_skills_with_proficiency': matched_skills_raw,  # For backward compatibility
             'matched_required_skills': matched_required_skills,
+            'verified_skills': scores.get('verified_skills', []),  # Skills found in experience (full credit)
+            'skills_only_skills': scores.get('skills_only_skills', []),  # Skills only in skills section (50% credit)
             'matched_nice_skills': matched_nice_skills,
             'missing_skills': scores.get('missing_skills', []),
             
@@ -648,7 +639,22 @@ def candidate_detail(request, candidate_id):
             'analysis_text': scores.get('analysis_text') or scores.get('rationale', 'Overall Match: Unable to assess'),
             'analysis_facts': scores.get('analysis_facts', {}),
             'analysis_bullets': scores.get('analysis_bullets', []),
-            'analysis_metadata': scores.get('analysis_metadata', {})
+            'analysis_metadata': scores.get('analysis_metadata', {}),
+            'score_breakdown': scores.get('score_breakdown', {}),
+            
+            # Score breakdown data for detailed display
+            'score_breakdown_data': {
+                'tfidf_norm': scores.get('tfidf_norm', 0.0),
+                'semantic_norm': scores.get('semantic_norm', 0.0),
+                'ce_norm': scores.get('ce_norm', 0.0),
+                'combined_tfidf': scores.get('combined_tfidf', scores.get('section_tfidf', 0.0)),
+                'sbert_score': scores.get('sbert_score', 0.0),
+                'ce_score': scores.get('ce_score', 0.0),
+                'coverage': scores.get('coverage', 0.0),
+                'gate_reason': scores.get('gate_reason', ''),
+                'gate_threshold': scores.get('gate_threshold', 0.0),
+                'final_score': scores.get('final_score', 0.0)
+            }
         }
         
         # Calculate rank based on final score
@@ -741,303 +747,43 @@ def candidate_compare(request):
     })
 
 def extract_candidate_name_robust(candidate_data):
-    """Extract candidate name from various data structures in ranking_list view."""
+    """Extract candidate display name - returns filename directly."""
     try:
-        # Try multiple possible locations for candidate name
-        candidate_name = None
-        
-        # Check direct fields
-        candidate_name = (
-            candidate_data.get('candidate_name') or
-            candidate_data.get('name') or
-            candidate_data.get('display_name') or
-            candidate_data.get('parsed_name')
-        )
-        
-        # Check nested structures
-        if not candidate_name:
-            # Check parsed data
-            parsed = candidate_data.get('parsed', {})
-            if isinstance(parsed, dict):
-                candidate_name = (
-                    parsed.get('candidate_name') or
-                    parsed.get('name') or
-                    parsed.get('parsed_name') or
-                    (isinstance(parsed.get('profile'), dict) and parsed.get('profile', {}).get('name')) or
-                    (isinstance(parsed.get('summary'), dict) and parsed.get('summary', {}).get('candidate_name'))
-                )
-        
-        # Check meta data
-        if not candidate_name:
-            meta = candidate_data.get('meta', {})
-            if isinstance(meta, dict):
-                candidate_name = meta.get('candidate_name') or meta.get('name')
-        
-        # If still no name, try to extract from resume sections
-        if not candidate_name:
-            sections = candidate_data.get('sections', [])
-            if isinstance(sections, list):
-                for section in sections:
-                    content = section.get('content', [])
-                    if content:
-                        # Look for lines that look like names (2-4 capitalized words)
-                        for line in content[:3]:  # Check first 3 lines of each section
-                            line = line.strip()
-                            if line and not line.startswith(('•', '-', '*', '1.', '2.', '3.')):
-                                words = line.split()
-                                if 2 <= len(words) <= 4 and all(word[0].isupper() for word in words if word and word[0].isalpha()):
-                                    # Additional validation: avoid common non-name patterns
-                                    if not any(pattern in line.lower() for pattern in [
-                                        'university', 'college', 'school', 'company', 'inc', 'llc', 'corp',
-                                        'software', 'engineer', 'developer', 'manager', 'director', 'analyst',
-                                        'resume', 'cv', 'curriculum vitae', 'phone', 'email', 'address'
-                                    ]):
-                                        candidate_name = line
-                                        break
-                    if candidate_name:
-                        break
-            elif isinstance(sections, dict):
-                # Handle dict-based sections structure
-                for section_name, section_content in sections.items():
-                    if isinstance(section_content, str) and section_content.strip():
-                        lines = section_content.split('\n')[:3]
-                        for line in lines:
-                            line = line.strip()
-                            if line and not line.startswith(('•', '-', '*', '1.', '2.', '3.')):
-                                words = line.split()
-                                if 2 <= len(words) <= 4 and all(word[0].isupper() for word in words if word and word[0].isalpha()):
-                                    if not any(pattern in line.lower() for pattern in [
-                                        'university', 'college', 'school', 'company', 'inc', 'llc', 'corp',
-                                        'software', 'engineer', 'developer', 'manager', 'director', 'analyst',
-                                        'resume', 'cv', 'curriculum vitae', 'phone', 'email', 'address'
-                                    ]):
-                                        candidate_name = line
-                                        break
-                        if candidate_name:
-                            break
-        
-        # Clean up the candidate name if found
-        if candidate_name:
-            candidate_name = candidate_name.strip()
-            # Remove any extra whitespace and clean up
-            candidate_name = ' '.join(candidate_name.split())
-            return candidate_name
-        
-        # Fallback to prettified filename
+        # Get source filename
         meta = candidate_data.get('meta', {})
-        source_file = meta.get('source_file', 'Unknown.pdf')
-        base_name = os.path.splitext(source_file)[0]
-        pretty_base = base_name.replace('_', ' ').replace('-', ' ').strip()
-        return pretty_base.title() if pretty_base else base_name
+        source_file = meta.get('source_file', '') or candidate_data.get('filename', '')
+        
+        # Return filename directly (or fallback if not available)
+        if source_file:
+            return source_file
+        
+        return "Unknown.pdf"
         
     except Exception as e:
         logger.error(f"Error extracting candidate name: {e}")
         # Final fallback
         meta = candidate_data.get('meta', {})
         source_file = meta.get('source_file', 'Unknown.pdf')
-        base_name = os.path.splitext(source_file)[0]
-        return base_name.replace('_', ' ').replace('-', ' ').strip().title()
+        return source_file if source_file else "Unknown.pdf"
 
 def get_candidate_display_name(candidate):
-    """Get display name for candidate (parsed name, inferred from filename, or filename)."""
-    # Helper to check if a name looks like a job title (should be rejected)
-    def is_job_title(name):
-        if not name:
-            return False
-        name_lower = name.lower()
-        job_title_keywords = [
-            'coordinator', 'practicum', 'supervisor', 'manager', 'director', 'analyst',
-            'engineer', 'developer', 'specialist', 'consultant', 'architect', 'scientist',
-            'lead', 'intern', 'founder', 'designer', 'technician', 'administrator',
-            'officer', 'programmer', 'strategist', 'editor', 'writer', 'producer',
-            'tester', 'trainer', 'teacher', 'mentor', 'assistant', 'associate',
-            'executive', 'president', 'vice', 'chief', 'head', 'senior', 'junior',
-            'principal', 'staff'
-        ]
-        words = name.split()
-        has_acronym = any(len(word) <= 4 and word.isupper() for word in words)
-        academic_patterns = ['bsit', 'bscs', 'bs ', 'ba ', 'ma ', 'ms ', 'phd', 'mba']
-        return (any(keyword in name_lower for keyword in job_title_keywords) or
-                has_acronym or
-                any(acad in name_lower for acad in academic_patterns))
-    
-    # Try to get parsed name from candidate data (prioritize parsed.candidate_name)
-    parsed_data = candidate.get('parsed', {})
-    parsed_name = (parsed_data.get('candidate_name') or 
-                   parsed_data.get('parsed_name') or 
-                   parsed_data.get('name'))
-    
-    # Only use top-level candidate.name if parsed_name is not available
-    if not parsed_name:
-        parsed_name = candidate.get('parsed_name') or candidate.get('name')
-    
-    # Filter out job titles
-    if parsed_name and parsed_name.strip() and not is_job_title(parsed_name):
-        return parsed_name.strip()
-    
-    # Infer name from filename (most reliable fallback)
-    filename = candidate.get('meta', {}).get('source_file', '') or candidate.get('filename', '')
-    if filename:
-        # Remove extension and clean up
-        name = os.path.splitext(filename)[0]
-        # Replace underscores with spaces and title case
-        name = name.replace('_', ' ').replace('-', ' ')
-        # Title case
-        name = ' '.join(word.capitalize() for word in name.split())
-        if name.strip():
-            return name.strip()
-    
-    # Fallback to filename or generic name
-    return filename or 'Unknown Candidate'
-
-@csrf_exempt
-def landing_page(request):
-    """Landing page view - main entry point for the website."""
-    if request.method == 'POST':
-        try:
-            resume_files = request.FILES.getlist('resumes')
-            # Collect criteria first and synthesize JD text (criteria becomes primary)
-            jd_criteria = {}
-            try:
-                jd_criteria = parse_criteria_from_post(request.POST)
-            except Exception as e:
-                logger.warning(f"Failed to parse JD criteria: {e}")
-            # If raw JD is provided, keep it as a fallback; otherwise synthesize from criteria
-            job_description = request.POST.get('job_description', '')
-            if not job_description.strip():
-                try:
-                    synthesized = build_jd_text(jd_criteria)
-                    job_description = synthesized or ''
-                except Exception as e:
-                    logger.warning(f"Failed to synthesize JD from criteria: {e}")
-            disable_ocr_flag = request.POST.get('disable_ocr', '') in ['1', 'true', 'on', 'yes']
-            
-            if not resume_files:
-                return JsonResponse({'error': 'No resume files uploaded'}, status=400)
-            
-            if not job_description:
-                return JsonResponse({'error': 'Job description/criteria is required'}, status=400)
-            
-            if len(resume_files) > 25:
-                return JsonResponse({'error': 'Maximum 25 resumes allowed'}, status=400)
-            
-            # Get API key from provider-agnostic configuration
-            llm_cfg = get_llm_config()
-            api_key = llm_cfg['api_key']
-            
-            # Check configuration status
-            config_issues = validate_config()
-            if config_issues:
-                logger.warning("Configuration issues detected: %s", config_issues)
-            
-            temp_paths = []
-            for resume_file in resume_files:
-                file_path = os.path.join(settings.MEDIA_ROOT, 'temp_uploads', resume_file.name)
-                os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                with open(file_path, 'wb+') as destination:
-                    for chunk in resume_file.chunks():
-                        destination.write(chunk)
-                temp_paths.append(file_path)
-            
-            # Initialize batch processor with API key
-            processor = BatchProcessor(api_key=api_key, disable_ocr=disable_ocr_flag)
-            
-            # Clear caches before processing
-            try:
-                processor.clear_all_caches()
-            except Exception as e:
-                logger.warning(f"Error clearing caches: {e}")
-            
-            # Process the batch
-            results = processor.process_batch(temp_paths, job_description, jd_criteria=jd_criteria, clear_cache=False)
-            
-            # Store batch results in session for ranking view
-            if 'batch_results' not in request.session:
-                request.session['batch_results'] = []
-            
-            # Add current batch results with timestamp
-            batch_info = {
-                'timestamp': timezone.now().isoformat(),
-                'job_description': job_description,
-                'resume_count': len(resume_files),
-                'results': results,
-                'filenames': [f.name for f in resume_files],
-                'disable_ocr': disable_ocr_flag,
-                'jd_criteria': jd_criteria
-            }
-            request.session['batch_results'].append(batch_info)
-            # Ensure Django persists in-place session mutations
-            request.session.modified = True
-            
-            # Keep only last 5 batches to avoid session bloat
-            if len(request.session['batch_results']) > 5:
-                request.session['batch_results'] = request.session['batch_results'][-5:]
-                request.session.modified = True
-            
-            # Persist last JD and criteria for development convenience (DEBUG only)
-            try:
-                if settings.DEBUG:
-                    cache_dir = os.path.join(settings.BASE_DIR, 'batch_processing_output')
-                    os.makedirs(cache_dir, exist_ok=True)
-                    last_jd_path = os.path.join(cache_dir, 'last_job_description.txt')
-                    with open(last_jd_path, 'w', encoding='utf-8') as f:
-                        f.write(job_description or '')
-                    # Persist criteria as JSON
-                    last_criteria_path = os.path.join(cache_dir, 'last_jd_criteria.json')
-                    try:
-                        with open(last_criteria_path, 'w', encoding='utf-8') as cf:
-                            json.dump(jd_criteria or {}, cf, ensure_ascii=False, indent=2)
-                    except Exception as e2:
-                        logger.warning(f"Failed to persist last criteria: {e2}")
-            except Exception as e:
-                logger.warning(f"Failed to persist last JD: {e}")
-
-            # Clean up temporary files
-            for path in temp_paths:
-                try:
-                    os.remove(path)
-                except:
-                    pass
-            
-            return JsonResponse(results)
-            
-        except Exception as e:
-            logger.error(f"Error in batch upload: {str(e)}")
-            return JsonResponse({'error': str(e)}, status=500)
-    
-    # GET request - show the landing page
-    llm_cfg = get_llm_config()
-    config_issues = validate_config()
-    # Load last JD/criteria for development convenience (DEBUG only)
-    last_job_description = ''
-    last_jd_criteria = {}
+    """Get display name for candidate - returns filename directly."""
     try:
-        if settings.DEBUG:
-            last_jd_path = os.path.join(settings.BASE_DIR, 'batch_processing_output', 'last_job_description.txt')
-            if os.path.exists(last_jd_path):
-                with open(last_jd_path, 'r', encoding='utf-8') as f:
-                    last_job_description = f.read()
-            last_criteria_path = os.path.join(settings.BASE_DIR, 'batch_processing_output', 'last_jd_criteria.json')
-            if os.path.exists(last_criteria_path):
-                try:
-                    with open(last_criteria_path, 'r', encoding='utf-8') as cf:
-                        last_jd_criteria = json.load(cf) or {}
-                except Exception as e2:
-                    logger.warning(f"Failed to load last criteria: {e2}")
+        # Get source filename
+        filename = candidate.get('meta', {}).get('source_file', '') or candidate.get('filename', '')
+        
+        # Return filename directly (or fallback if not available)
+        if filename:
+            return filename
+        
+        return "Unknown.pdf"
+        
     except Exception as e:
-        logger.warning(f"Failed to load last JD: {e}")
-    
-    context = {
-        'api_key_configured': bool(llm_cfg['api_key']),
-        'config_issues': config_issues,
-        'llm_provider': llm_cfg.get('provider', 'openai'),
-        'llm_model': llm_cfg.get('model', ''),
-        'llm_enabled': llm_cfg.get('enabled', False),
-        'last_job_description': last_job_description,
-        'last_jd_criteria': last_jd_criteria,
-    }
-    
-    return render(request, 'resume_processor/landing_page.html', context)
+        logger.error(f"Error getting candidate display name: {e}")
+        return "Unknown.pdf"
+
+# landing_page was removed during dead-code cleanup (scoring pipeline rewrite).
+
 
 def upload_resume(request):
     """View for uploading resume PDF files."""
@@ -1277,86 +1023,10 @@ def ranking_view(request):
             resume_id = resume_data['id']
             ranking_info = ranking_map.get(resume_id, {})
             
-            # Derive a display name (prefer parsed name; fallback to prettified filename)
+            # Use filename directly as display name
             meta = resume_data.get('meta', {})
-            parsed = resume_data.get('parsed', {})
             source_file = meta.get('source_file', 'Unknown.pdf')
-            base_name = os.path.splitext(source_file)[0]
-            pretty_base = base_name.replace('_', ' ').replace('-', ' ').strip()
-            pretty_base = pretty_base.title() if pretty_base else base_name
-
-            candidate_name = None
-            
-            # Try multiple sources for candidate name
-            if isinstance(parsed, dict):
-                # Check various possible locations for the name
-                candidate_name = (
-                    parsed.get('candidate_name') or 
-                    parsed.get('name') or 
-                    parsed.get('parsed_name') or
-                    (isinstance(parsed.get('profile'), dict) and parsed.get('profile', {}).get('name')) or
-                    (isinstance(parsed.get('summary'), dict) and parsed.get('summary', {}).get('candidate_name'))
-                )
-            
-            # Check meta data
-            candidate_name = candidate_name or meta.get('candidate_name') or meta.get('name')
-            
-            # If no name found in parsed data, try to extract from resume sections
-            if not candidate_name:
-                sections = resume_data.get('sections', [])
-                if isinstance(sections, list):
-                    for section in sections:
-                        content = section.get('content', [])
-                        if content:
-                            # Look for lines that look like names (2-4 capitalized words)
-                            for line in content[:3]:  # Check first 3 lines of each section
-                                line = line.strip()
-                                if line and not line.startswith(('•', '-', '*', '1.', '2.', '3.')):
-                                    words = line.split()
-                                    if 2 <= len(words) <= 4 and all(word[0].isupper() for word in words if word and word[0].isalpha()):
-                                        # Additional validation: avoid common non-name patterns
-                                        if not any(pattern in line.lower() for pattern in [
-                                            'university', 'college', 'school', 'company', 'inc', 'llc', 'corp',
-                                            'software', 'engineer', 'developer', 'manager', 'director', 'analyst',
-                                            'resume', 'cv', 'curriculum vitae', 'phone', 'email', 'address'
-                                        ]):
-                                            candidate_name = line
-                                            break
-                        if candidate_name:
-                            break
-                elif isinstance(sections, dict):
-                    # Handle dict-based sections structure
-                    for section_name, section_content in sections.items():
-                        if isinstance(section_content, str) and section_content.strip():
-                            lines = section_content.split('\n')[:3]
-                            for line in lines:
-                                line = line.strip()
-                                if line and not line.startswith(('•', '-', '*', '1.', '2.', '3.')):
-                                    words = line.split()
-                                    if 2 <= len(words) <= 4 and all(word[0].isupper() for word in words if word and word[0].isalpha()):
-                                        if not any(pattern in line.lower() for pattern in [
-                                            'university', 'college', 'school', 'company', 'inc', 'llc', 'corp',
-                                            'software', 'engineer', 'developer', 'manager', 'director', 'analyst',
-                                            'resume', 'cv', 'curriculum vitae', 'phone', 'email', 'address'
-                                        ]):
-                                            candidate_name = line
-                                            break
-                            if candidate_name:
-                                break
-            
-            # Clean up the candidate name if found
-            if candidate_name:
-                candidate_name = candidate_name.strip()
-                # Remove any extra whitespace and clean up
-                candidate_name = ' '.join(candidate_name.split())
-            
-            display_name = candidate_name if candidate_name else pretty_base
-            
-            # Debug logging (can be removed later)
-            if not candidate_name:
-                logger.debug(f"No candidate name found for {source_file}, using filename: {pretty_base}")
-            else:
-                logger.debug(f"Found candidate name: {candidate_name} for {source_file}")
+            display_name = source_file
             
             scores_obj = resume_data.get('scores', {})
             # Use final_score for ranking (the actual computed score)
@@ -1453,24 +1123,5 @@ def all_batches_view(request):
         messages.error(request, f'Error loading batch history: {str(e)}')
         return redirect('resume_processor:resume_list')
 
-@csrf_exempt
-def deterministic_ranking_api(request):
-    """API endpoint for deterministic resume ranking."""
-    if request.method == 'POST':
-        try:
-            from .deterministic_ranker import process_ranking_payload
-            
-            # Get JSON payload from request body
-            payload_json = request.body.decode('utf-8')
-            
-            # Process ranking
-            result_json = process_ranking_payload(payload_json)
-            
-            # Return JSON response
-            return HttpResponse(result_json, content_type='application/json')
-            
-        except Exception as e:
-            logger.error(f"Error in deterministic ranking: {str(e)}")
-            return JsonResponse({'error': str(e)}, status=500)
-    
-    return JsonResponse({'error': 'Only POST method allowed'}, status=405)
+
+

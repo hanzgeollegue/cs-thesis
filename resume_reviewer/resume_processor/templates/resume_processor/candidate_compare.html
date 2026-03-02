@@ -1,0 +1,443 @@
+{% extends 'resume_processor/base.html' %}
+
+{% block title %}Candidate Comparison{% endblock %}
+
+{% block content %}
+<div class="comparison-section">
+    <!-- Header -->
+    <div class="comparison-header">
+        <h1>Candidate Comparison</h1>
+        <div class="breadcrumb">
+            <a href="{% url 'home' %}">Home</a> > 
+            <a href="{% url 'ranking_list' %}">Results</a> > 
+            <span>Compare</span>
+        </div>
+    </div>
+
+    <!-- Candidates Grid -->
+    <div class="candidates-grid">
+        {% for candidate in candidates %}
+        <div class="candidate-card">
+            <div class="candidate-header">
+                <h2>{{ candidate.display_name }}</h2>
+                <div class="candidate-badges">
+                    <span class="score-badge">{{ candidate.scores.final_score|floatformat:1 }}%</span>
+                    <span class="rank-badge">#{{ forloop.counter }}</span>
+                </div>
+            </div>
+            
+            <div class="candidate-metrics">
+                <div class="metric">
+                    <span class="metric-label">Skills Match</span>
+                    <span class="metric-value">{{ candidate.scores.matched_required_skills|length }}/{{ must_have_skills_count }}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Experience</span>
+                    <span class="metric-value">{{ candidate.scores.has_match_experience|yesno:"Yes,No" }}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Coverage</span>
+                    <span class="metric-value">{{ candidate.scores.coverage|floatformat:1 }}</span>
+                </div>
+            </div>
+            
+            <div class="candidate-analysis">
+                <h3>Analysis</h3>
+                <p>{{ candidate.friendly_rationale }}</p>
+            </div>
+            
+            <div class="candidate-skills">
+                <h3>Matched Skills</h3>
+                <div class="skill-chips">
+                    {% for skill in candidate.scores.matched_required_skills %}
+                        <span class="skill-chip matched">{{ skill }}</span>
+                    {% empty %}
+                        <span class="no-skills">No matched skills</span>
+                    {% endfor %}
+                </div>
+                
+                {% if candidate.scores.missing_skills %}
+                <h3>Missing Skills</h3>
+                <div class="skill-chips">
+                    {% for skill in candidate.scores.missing_skills %}
+                        <span class="skill-chip missing">{{ skill }}</span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- Pairwise Comparisons -->
+    {% if pairwise_comparisons %}
+    <div class="comparisons-section">
+        <h2>Detailed Comparisons</h2>
+        {% for comparison in pairwise_comparisons %}
+        <div class="comparison-card">
+            <div class="comparison-header">
+                <h3>
+                    {% if comparison.winner == 'a' %}
+                        {{ comparison.candidate_a_name }} vs {{ comparison.candidate_b_name }}
+                    {% elif comparison.winner == 'b' %}
+                        {{ comparison.candidate_b_name }} vs {{ comparison.candidate_a_name }}
+                    {% else %}
+                        {{ comparison.candidate_a_name }} vs {{ comparison.candidate_b_name }}
+                    {% endif %}
+                </h3>
+                {% if comparison.winner %}
+                    <span class="winner-badge">
+                        {% if comparison.winner == 'a' %}
+                            {{ comparison.candidate_a_name }} wins
+                        {% else %}
+                            {{ comparison.candidate_b_name }} wins
+                        {% endif %}
+                        ({{ comparison.margin|floatformat:1 }}% margin)
+                    </span>
+                {% else %}
+                    <span class="tie-badge">Tie</span>
+                {% endif %}
+            </div>
+            
+            <div class="comparison-text">
+                <p>{{ comparison.comparison_text }}</p>
+            </div>
+            
+            {% if comparison.key_differences %}
+            <div class="key-differences">
+                <h4>Key Differences</h4>
+                <ul>
+                    {% for difference in comparison.key_differences %}
+                        <li>{{ difference }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Actions -->
+    <div class="actions-section">
+        <a href="{% url 'ranking_list' %}" class="btn btn-primary">← Back to Results</a>
+    </div>
+</div>
+
+<style>
+    /* CSS Variables for consistent styling */
+    :root {
+        --primary-color: #007bff;
+        --success-color: #28a745;
+        --warning-color: #ffc107;
+        --danger-color: #dc3545;
+        --light-color: #f8f9fa;
+        --dark-color: #343a40;
+        --border-radius: 8px;
+        --spacing-xs: 4px;
+        --spacing-sm: 8px;
+        --spacing-md: 12px;
+        --spacing-lg: 16px;
+        --spacing-xl: 20px;
+    }
+
+    .comparison-section {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: var(--spacing-xl);
+    }
+
+    /* Header */
+    .comparison-header {
+        text-align: center;
+        margin-bottom: var(--spacing-xl);
+    }
+
+    .comparison-header h1 {
+        color: var(--dark-color);
+        margin-bottom: var(--spacing-md);
+    }
+
+    .breadcrumb {
+        color: #6c757d;
+    }
+
+    .breadcrumb a {
+        color: var(--primary-color);
+        text-decoration: none;
+    }
+
+    .breadcrumb a:hover {
+        text-decoration: underline;
+    }
+
+    /* Candidates Grid */
+    .candidates-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+        gap: var(--spacing-xl);
+        margin-bottom: var(--spacing-xl);
+    }
+
+    .candidate-card {
+        background: white;
+        border: 1px solid #e9ecef;
+        border-radius: var(--border-radius);
+        padding: var(--spacing-xl);
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+
+    .candidate-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: var(--spacing-lg);
+        padding-bottom: var(--spacing-md);
+        border-bottom: 1px solid #e9ecef;
+    }
+
+    .candidate-header h2 {
+        margin: 0;
+        color: var(--primary-color);
+    }
+
+    .candidate-badges {
+        display: flex;
+        gap: var(--spacing-sm);
+    }
+
+    .score-badge, .rank-badge {
+        padding: var(--spacing-xs) var(--spacing-md);
+        border-radius: 15px;
+        font-weight: bold;
+        font-size: 0.9rem;
+    }
+
+    .score-badge {
+        background: var(--primary-color);
+        color: white;
+    }
+
+    .rank-badge {
+        background: var(--light-color);
+        color: var(--dark-color);
+        border: 1px solid #e9ecef;
+    }
+
+    /* Metrics */
+    .candidate-metrics {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: var(--spacing-md);
+        margin-bottom: var(--spacing-lg);
+    }
+
+    .metric {
+        text-align: center;
+        padding: var(--spacing-md);
+        background: var(--light-color);
+        border-radius: var(--border-radius);
+    }
+
+    .metric-label {
+        display: block;
+        font-size: 0.8rem;
+        color: #6c757d;
+        margin-bottom: var(--spacing-xs);
+    }
+
+    .metric-value {
+        display: block;
+        font-weight: bold;
+        color: var(--dark-color);
+    }
+
+    /* Analysis */
+    .candidate-analysis {
+        margin-bottom: var(--spacing-lg);
+    }
+
+    .candidate-analysis h3 {
+        margin: 0 0 var(--spacing-sm) 0;
+        color: var(--dark-color);
+        font-size: 1.1rem;
+    }
+
+    .candidate-analysis p {
+        margin: 0;
+        line-height: 1.5;
+        color: #495057;
+    }
+
+    /* Skills */
+    .candidate-skills h3 {
+        margin: 0 0 var(--spacing-sm) 0;
+        color: var(--dark-color);
+        font-size: 1.1rem;
+    }
+
+    .skill-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--spacing-xs);
+        margin-bottom: var(--spacing-md);
+    }
+
+    .skill-chip {
+        padding: var(--spacing-xs) var(--spacing-sm);
+        border-radius: 12px;
+        font-size: 0.8rem;
+        font-weight: 500;
+        border: 1px solid;
+    }
+
+    .skill-chip.matched {
+        background: #e8f5e8;
+        color: #2e7d32;
+        border-color: #c8e6c9;
+    }
+
+    .skill-chip.missing {
+        background: #ffebee;
+        color: #c62828;
+        border-color: #ffcdd2;
+    }
+
+    .no-skills {
+        color: #6c757d;
+        font-style: italic;
+        font-size: 0.9rem;
+    }
+
+    /* Comparisons Section */
+    .comparisons-section {
+        margin-bottom: var(--spacing-xl);
+    }
+
+    .comparisons-section h2 {
+        color: var(--dark-color);
+        border-bottom: 2px solid var(--primary-color);
+        padding-bottom: var(--spacing-sm);
+        margin-bottom: var(--spacing-lg);
+    }
+
+    .comparison-card {
+        background: white;
+        border: 1px solid #e9ecef;
+        border-radius: var(--border-radius);
+        padding: var(--spacing-xl);
+        margin-bottom: var(--spacing-lg);
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+
+    .comparison-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: var(--spacing-md);
+        padding-bottom: var(--spacing-sm);
+        border-bottom: 1px solid #e9ecef;
+    }
+
+    .comparison-header h3 {
+        margin: 0;
+        color: var(--primary-color);
+    }
+
+    .winner-badge, .tie-badge {
+        padding: var(--spacing-xs) var(--spacing-md);
+        border-radius: 15px;
+        font-weight: bold;
+        font-size: 0.9rem;
+    }
+
+    .winner-badge {
+        background: var(--success-color);
+        color: white;
+    }
+
+    .tie-badge {
+        background: var(--warning-color);
+        color: var(--dark-color);
+    }
+
+    .comparison-text {
+        margin-bottom: var(--spacing-md);
+    }
+
+    .comparison-text p {
+        margin: 0;
+        line-height: 1.6;
+        color: #495057;
+    }
+
+    .key-differences h4 {
+        margin: 0 0 var(--spacing-sm) 0;
+        color: var(--dark-color);
+        font-size: 1rem;
+    }
+
+    .key-differences ul {
+        margin: 0;
+        padding-left: var(--spacing-lg);
+    }
+
+    .key-differences li {
+        margin-bottom: var(--spacing-xs);
+        line-height: 1.4;
+        color: #495057;
+    }
+
+    /* Actions */
+    .actions-section {
+        text-align: center;
+        padding-top: var(--spacing-xl);
+        border-top: 1px solid #e9ecef;
+    }
+
+    .btn {
+        padding: var(--spacing-md) var(--spacing-xl);
+        border: none;
+        border-radius: var(--border-radius);
+        text-decoration: none;
+        font-size: 1rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        display: inline-flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+    }
+
+    .btn-primary {
+        background: var(--primary-color);
+        color: white;
+    }
+
+    .btn-primary:hover {
+        background: #0056b3;
+        transform: translateY(-1px);
+    }
+
+    /* Responsive Design */
+    @media (max-width: 768px) {
+        .comparison-section {
+            padding: var(--spacing-md);
+        }
+
+        .candidates-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .candidate-metrics {
+            grid-template-columns: 1fr;
+        }
+
+        .comparison-header {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: var(--spacing-sm);
+        }
+    }
+</style>
+{% endblock %}

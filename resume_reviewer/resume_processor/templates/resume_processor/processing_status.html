@@ -1,0 +1,77 @@
+{% extends 'resume_processor/base.html' %}
+
+{% block title %}Processing Status{% endblock %}
+
+{% block content %}
+<div class="processing-section">
+    <h2>Processing Status</h2>
+    <p>Your resumes are being processed. Please wait...</p>
+    
+    <div class="processing-info">
+        <div class="status-indicator">
+            <div class="spinner"></div>
+            <span>Processing in progress...</span>
+        </div>
+    </div>
+    
+    <div class="processing-actions">
+        <a href="{% url 'resume_upload' %}" class="btn btn-secondary">Back to Upload</a>
+    </div>
+</div>
+
+<style>
+.processing-section {
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 40px 20px;
+    text-align: center;
+}
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 15px;
+    margin: 30px 0;
+    font-size: 1.1rem;
+    color: #495057;
+}
+
+.spinner {
+    width: 30px;
+    height: 30px;
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #007bff;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.processing-actions {
+    margin-top: 30px;
+}
+
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 6px;
+    text-decoration: none;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn-secondary {
+    background: #6c757d;
+    color: white;
+}
+
+.btn-secondary:hover {
+    background: #545b62;
+}
+</style>
+{% endblock %}

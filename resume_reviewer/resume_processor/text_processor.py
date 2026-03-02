@@ -2,9 +2,8 @@ import json
 import re
 import numpy as np
 import hashlib
+import unicodedata
 from typing import List, Dict, Any, Tuple, Optional
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 import logging
 from collections import defaultdict
 import pickle
@@ -266,6 +265,143 @@ def preprocess_text_for_dense_models(text: str) -> str:
         return ""
 
 
+def dehyphenate_text(text: str) -> str:
+    """Join soft-wrapped lines (e.g., "develop-\nment" → "development")."""
+    try:
+        if not text:
+            return ""
+        
+        # Pattern: word followed by hyphen, newline, and continuation
+        # This handles cases like "develop-\nment" or "soft-\nware"
+        text = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', text)
+        
+        return text
+    except Exception as e:
+        logger.warning(f"Error dehyphenating text: {e}")
+        return text
+
+
+def normalize_bullets(text: str) -> str:
+    """Collapse bullet variants (•/●/-/*) to standard marker."""
+    try:
+        if not text:
+            return ""
+        
+        # Replace various bullet characters with standard bullet
+        bullet_chars = ['•', '●', '◦', '▪', '▫', '‣', '⁃']
+        for char in bullet_chars:
+            text = text.replace(char, '•')
+        
+        # Also handle dash bullets at start of line
+        text = re.sub(r'^\s*-\s+', '• ', text, flags=re.MULTILINE)
+        text = re.sub(r'^\s*\*\s+', '• ', text, flags=re.MULTILINE)
+        
+        return text
+    except Exception as e:
+        logger.warning(f"Error normalizing bullets: {e}")
+        return text
+
+
+def join_wrapped_lines(text: str) -> str:
+    """Merge lines that end mid-sentence (no punctuation)."""
+    try:
+        if not text:
+            return ""
+        
+        lines = text.split('\n')
+        joined_lines = []
+        i = 0
+        
+        while i < len(lines):
+            line = lines[i].strip()
+            if not line:
+                joined_lines.append('')
+                i += 1
+                continue
+            
+            # Check if line ends without punctuation and next line starts with lowercase
+            if (i + 1 < len(lines) and 
+                not re.search(r'[.!?:;]$', line) and 
+                lines[i + 1].strip() and 
+                lines[i + 1].strip()[0].islower()):
+                # Join with space
+                line += ' ' + lines[i + 1].strip()
+                i += 2
+            else:
+                i += 1
+            
+            joined_lines.append(line)
+        
+        return '\n'.join(joined_lines)
+    except Exception as e:
+        logger.warning(f"Error joining wrapped lines: {e}")
+        return text
+
+
+def strip_boilerplate_headers(lines: List[str]) -> List[str]:
+    """Remove "Resume", "CV", "Page X of Y", etc."""
+    try:
+        if not lines:
+            return []
+        
+        # Common boilerplate patterns to remove
+        boilerplate_patterns = [
+            r'^(resume|cv|curriculum vitae)$',
+            r'^(personal information|contact information)$',
+            r'^(objective|summary|profile)$',
+            r'^(references available upon request)$',
+            r'^(page \d+ of \d+)$',
+            r'^(confidential|private)$',
+            r'^(draft|template)$'
+        ]
+        
+        filtered_lines = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                filtered_lines.append('')
+                continue
+            
+            # Check if line matches any boilerplate pattern
+            is_boilerplate = False
+            for pattern in boilerplate_patterns:
+                if re.match(pattern, line, re.IGNORECASE):
+                    is_boilerplate = True
+                    break
+            
+            if not is_boilerplate:
+                filtered_lines.append(line)
+        
+        return filtered_lines
+    except Exception as e:
+        logger.warning(f"Error stripping boilerplate: {e}")
+        return lines
+
+
+def preprocess_resume_text(raw_text: str) -> str:
+    """Full preprocessing pipeline for resume text."""
+    try:
+        if not raw_text:
+            return ""
+        
+        # Unicode normalization
+        import unicodedata
+        text = unicodedata.normalize('NFKC', raw_text)
+        
+        # Apply preprocessing steps
+        text = dehyphenate_text(text)
+        text = join_wrapped_lines(text)
+        text = normalize_bullets(text)
+        
+        # Collapse whitespace
+        text = re.sub(r'\s+', ' ', text)
+        
+        return text.strip()
+    except Exception as e:
+        logger.warning(f"Error in resume text preprocessing: {e}")
+        return raw_text
+
+
 def build_canonical_resume_text(sections: Dict[str, Any]) -> str:
     """Build a single normalized string for downstream models (TF-IDF/SBERT/CE)."""
     try:
@@ -285,82 +421,6 @@ def build_canonical_resume_text(sections: Dict[str, Any]) -> str:
         return ""
 
 
-def _extract_technical_skills(text: str) -> str:
-    """Extract technical-sounding skill phrases from free text for JD fallback.
-    Returns a comma-separated string of detected skills.
-    """
-    try:
-        taxonomy = SkillTaxonomy()
-        tokens = taxonomy.extract_skills_from_text(text)
-        if not tokens:
-            return ""
-        return ', '.join(sorted(set(tokens)))
-    except Exception as e:
-        logger.warning(f"Error extracting technical skills: {e}")
-        return ""
-
-@contextmanager
-def time_phase(name: str, bucket: Optional[Dict[str, float]] = None):
-    """Context manager for timing phases."""
-    if not TIMING_ENABLED:
-        yield
-        return
-    
-    start = time.perf_counter()
-    try:
-        yield
-    finally:
-        elapsed = time.perf_counter() - start
-        logger.info(f"[TIMING] {name}: {elapsed:.3f}s")
-        if bucket is not None:
-            bucket[name] = elapsed
-
-def _norm(x, lo, hi):
-    """Normalize value to [0,1] range."""
-    if hi is None or lo is None or hi <= lo: 
-        return 0.5
-    v = (x - lo) / (hi - lo)
-    return 0.0 if v < 0 else 1.0 if v > 1 else float(v)
-
-def _std(vals):
-    """Compute standard deviation of values."""
-    vals = [v for v in vals if isinstance(v, (int, float))]
-    if not vals: 
-        return 0.0
-    m = sum(vals) / len(vals)
-    return math.sqrt(sum((v - m) ** 2 for v in vals) / len(vals))
-
-def _dedup(items, key_fn):
-    """Deduplicate items based on key function."""
-    seen, out = set(), []
-    for it in items:
-        k = key_fn(it)
-        if k not in seen:
-            seen.add(k)
-            out.append(it)
-    return out
-
-def _jd_hash(text: str, max_features: int, ngram: tuple[int, int]) -> str:
-    """Generate hash for job description caching."""
-    h = hashlib.sha256()
-    h.update((text or "").lower().encode("utf-8"))
-    h.update(f"{max_features}-{ngram}".encode("utf-8"))
-    return h.hexdigest()
-
-# Module-level caches for TF-IDF vectorizers
-_section_vectorizer_cache = {}
-_skill_vectorizer_cache = {}
-
-def clear_tfidf_caches() -> None:
-    """Clear in-memory TF-IDF vectorizer caches (for testing)."""
-    try:
-        _section_vectorizer_cache.clear()
-    except Exception:
-        pass
-    try:
-        _skill_vectorizer_cache.clear()
-    except Exception:
-        pass
 
 def chunk_text_for_sbert(text: str, max_tokens: int = 512) -> List[str]:
     """
@@ -441,375 +501,122 @@ def scrub_pii_and_boilerplate(text: str) -> str:
     
     return ' '.join(cleaned_lines)
 
-class SectionAwareTFIDF:
-    """Section-aware TF-IDF implementation for resume processing."""
+class SemanticSkillMatcher:
+    """Semantic matcher for fuzzy skill matching using SBERT.
     
-    def __init__(self):
-        from .config import TFIDF_MAX_FEATURES, TFIDF_NGRAM_RANGE, TFIDF_MIN_DF, TFIDF_MAX_DF
-        
-        # Section weights for different resume sections
-        self.section_weights = {
-            'skills': 0.35,
-            'experience': 0.45,
-            'education': 0.15,
-            'summary': 0.25,
-            'projects': 0.30,
-            'certifications': 0.20,
-            'awards': 0.15,
-            'languages': 0.10,
-            'interests': 0.05,
-            'volunteer': 0.15,
-            'leadership': 0.20,
-            'availability': 0.05,
-            'references': 0.05,
-            'contact': 0.00,  # No weight for contact info
-            'default': 0.10   # Default weight for unknown sections
-        }
-        
-        # TF-IDF configuration
-        self.tfidf_config = {
-            'max_features': TFIDF_MAX_FEATURES,
-            'ngram_range': TFIDF_NGRAM_RANGE,
-            'min_df': TFIDF_MIN_DF,
-            'max_df': TFIDF_MAX_DF
-        }
-        
-        # TF-IDF vectorizers for different section types
-        self.vectorizers = {}
-        self.section_vectors = {}
-        
-    def build_section_vectors(self, resume_data: Dict[str, Any]) -> Dict[str, np.ndarray]:
-        """Build TF-IDF vectors for each section of a resume."""
-        sections = resume_data.get('sections', [])
-        section_vectors = {}
-        
-        for section in sections:
-            header = section['header'].lower()
-            content = section['content']
-            
-            # Determine section type
-            section_type = self._classify_section(header)
-            
-            # Combine content into single text
-            section_text = ' '.join(content)
-            
-            # Create or get vectorizer for this section type
-            if section_type not in self.vectorizers:
-                self.vectorizers[section_type] = TfidfVectorizer(
-                    max_features=1000,
-                    stop_words='english',
-                    ngram_range=(1, 2),
-                    min_df=1,
-                    max_df=0.95
-                )
-            
-            # Fit and transform the section text
-            try:
-                vector = self.vectorizers[section_type].fit_transform([section_text])
-                section_vectors[section_type] = vector.toarray()[0]
-            except Exception as e:
-                logger.warning(f"Error vectorizing section {section_type}: {str(e)}")
-                section_vectors[section_type] = np.zeros(1000)  # Default empty vector
-        
-        return section_vectors
+    This class provides fuzzy matching capabilities for skills that don't have
+    exact matches in the taxonomy. It uses sentence transformers to compute
+    semantic similarity between input skills and canonical taxonomy skills.
     
-    def _classify_section(self, header: str) -> str:
-        """Classify a section header into a standard category."""
-        header_lower = header.lower()
-        
-        # Map headers to standard categories
-        if any(word in header_lower for word in ['skill', 'competency', 'expertise', 'proficiency']):
-            return 'skills'
-        elif any(word in header_lower for word in ['experience', 'employment', 'work', 'career']):
-            return 'experience'
-        elif any(word in header_lower for word in ['education', 'academic', 'qualification']):
-            return 'education'
-        elif any(word in header_lower for word in ['summary', 'profile', 'objective']):
-            return 'summary'
-        elif any(word in header_lower for word in ['project']):
-            return 'projects'
-        elif any(word in header_lower for word in ['certification', 'certificate', 'license']):
-            return 'certifications'
-        elif any(word in header_lower for word in ['award', 'honor', 'achievement']):
-            return 'awards'
-        elif any(word in header_lower for word in ['language']):
-            return 'languages'
-        elif any(word in header_lower for word in ['interest', 'hobby']):
-            return 'interests'
-        elif any(word in header_lower for word in ['volunteer']):
-            return 'volunteer'
-        elif any(word in header_lower for word in ['leadership']):
-            return 'leadership'
-        elif any(word in header_lower for word in ['availability']):
-            return 'availability'
-        elif any(word in header_lower for word in ['reference', 'referee']):
-            return 'references'
-        elif any(word in header_lower for word in ['contact', 'personal']):
-            return 'contact'
-        else:
-            return 'default'
+    Attributes:
+        canonical_skills: List of canonical skill names to match against
+        model: SentenceTransformer model (lazy-loaded)
+        model_available: Whether the model is available
+        embeddings: Pre-computed embeddings for all canonical skills
+    """
     
-    def combine_weighted_vectors(self, section_vectors: Dict[str, np.ndarray]) -> np.ndarray:
-        """Combine section vectors with appropriate weights."""
-        if not section_vectors:
-            return np.zeros(1000)
+    def __init__(self, canonical_skills: List[str]):
+        """Initialize with list of canonical skills to match against."""
+        self.canonical_skills = canonical_skills
+        self.model = None
+        self.model_available = False
+        self.embeddings = None
         
-        # Get the maximum vector length
-        max_length = max(len(vector) for vector in section_vectors.values())
-        
-        # Initialize combined vector
-        combined_vector = np.zeros(max_length)
-        total_weight = 0
-        
-        for section_type, vector in section_vectors.items():
-            weight = self.section_weights.get(section_type, self.section_weights['default'])
-            
-            # Pad or truncate vector to match max_length
-            if len(vector) < max_length:
-                padded_vector = np.pad(vector, (0, max_length - len(vector)), 'constant')
-            else:
-                padded_vector = vector[:max_length]
-            
-            combined_vector += weight * padded_vector
-            total_weight += weight
-        
-        # Normalize by total weight
-        if total_weight > 0:
-            combined_vector /= total_weight
-        
-        return combined_vector
-    
-    def calculate_similarity(self, resume1_vectors: Dict[str, np.ndarray], 
-                           resume2_vectors: Dict[str, np.ndarray]) -> float:
-        """Calculate similarity between two resumes using weighted section vectors."""
-        timing_bucket = {}
-        
-        with time_phase("vectorize", timing_bucket):
-            combined1 = self.combine_weighted_vectors(resume1_vectors)
-            combined2 = self.combine_weighted_vectors(resume2_vectors)
-            
-            # Reshape for cosine similarity
-            combined1 = combined1.reshape(1, -1)
-            combined2 = combined2.reshape(1, -1)
-        
-        with time_phase("cosine", timing_bucket):
-            similarity = cosine_similarity(combined1, combined2)[0][0]
-        
-        return similarity
-
-    def compute_section_tfidf_scores(self, resumes: List[Dict[str, Any]], jd_sections: Dict[str, str]) -> Tuple[List[float], List[float]]:
-        """Compute section TF-IDF scores with separate channels and normalization."""
         try:
-            logger.info(f"Starting TF-IDF computation with {len(resumes)} resumes")
-            if not resumes:
-                logger.warning("No resumes provided for TF-IDF scoring")
-                return [], []
-            
-            # Normalize JD sections if they're raw text
-            if isinstance(jd_sections, str):
-                logger.info("Normalizing raw JD text")
-                jd_normalized = normalize_job_description(jd_sections)
-                jd_sections = {
-                    'experience': jd_normalized.get('experience_required', ''),
-                    'skills': jd_normalized.get('skills_required', ''),
-                    'education': jd_normalized.get('education', ''),
-                    'misc': ' '.join([
-                        jd_normalized.get('job_title', ''),
-                        jd_normalized.get('responsibilities', ''),
-                        jd_normalized.get('company_description', ''),
-                        jd_normalized.get('location', '')
-                    ])
-                }
-            
-            # Channel 1: Section TF-IDF - separate vectorizer for section content
-            section_texts = []
-            for resume in resumes:
-                try:
-                    sections = resume.get('sections', {})
-                    if isinstance(sections, dict):
-                        section_text = ' '.join([
-                            str(sections.get('experience', '')),
-                            str(sections.get('skills', '')),
-                            str(sections.get('education', '')),
-                            str(sections.get('misc', ''))
-                        ])
-                        # Fallback: if the expected keys are sparse/empty, concatenate all section values
-                        if not section_text.strip():
-                            try:
-                                section_text = ' '.join([str(v) for v in sections.values()])
-                            except Exception:
-                                section_text = ''
-                    else:
-                        logger.warning(f"Invalid sections format for resume: {type(sections)}")
-                        section_text = ''
-                    
-                    # Preprocess the text (preserve skill tokens like Node.js, C++, C#)
-                    section_text = preprocess_text_for_dense_models(section_text)
-                    section_texts.append(section_text)
-                except Exception as e:
-                    logger.warning(f"Error processing resume sections: {e}")
-                    section_texts.append('')
-            
-            jd_section_text = ' '.join([
-                str(jd_sections.get('experience', '')),
-                str(jd_sections.get('skills', '')),
-                str(jd_sections.get('education', '')),
-                str(jd_sections.get('misc', ''))
-            ])
-            
-            # Preprocess JD text (preserve skill tokens)
-            jd_section_text = preprocess_text_for_dense_models(jd_section_text)
-            
-            # Handle empty text case
-            if not jd_section_text.strip():
-                logger.warning("Empty job description sections, returning zero scores")
-                return [0.0] * len(resumes), [0.0] * len(resumes)
-            
-            # Check cache for section vectorizer
-            jd_hash = _jd_hash(jd_section_text, self.tfidf_config['max_features'], self.tfidf_config['ngram_range'])
-            if jd_hash in _section_vectorizer_cache:
-                logger.info(f"[PERF] Using cached section vectorizer for JD hash: {jd_hash[:8]}")
-                vectorizer = _section_vectorizer_cache[jd_hash]
-                all_texts = [jd_section_text] + section_texts
-                vectors = vectorizer.transform(all_texts)
-            else:
-                # Fit TF-IDF on section texts with separate config
-                section_config = self.tfidf_config.copy()
-                section_config['max_features'] = 1000  # Smaller for sections
-                vectorizer = TfidfVectorizer(**section_config)
-                all_texts = [jd_section_text] + section_texts
-                vectors = vectorizer.fit_transform(all_texts)
-                _section_vectorizer_cache[jd_hash] = vectorizer
-                logger.info(f"[PERF] Cached section vectorizer for JD hash: {jd_hash[:8]}")
-            
-            # Compute similarities
-            jd_vector = vectors[0:1]
-            resume_vectors = vectors[1:]
-            similarities = cosine_similarity(jd_vector, resume_vectors).flatten()
-            
-            # Normalize to [0,1]
-            raw_scores = similarities.tolist()
-            if raw_scores and len(raw_scores) > 0:
-                min_score, max_score = min(raw_scores), max(raw_scores)
-                if max_score > min_score:
-                    norm_scores = [_norm(score, min_score, max_score) for score in raw_scores]
-                else:
-                    norm_scores = [0.0] * len(raw_scores)
-            else:
-                norm_scores = [0.0] * len(resumes)
-            
-            # Channel 2: Skill/Taxonomy TF-IDF - separate vectorizer for skill tokens
-            taxonomy = SkillTaxonomy()
-            skill_texts = []
-            for resume in resumes:
-                try:
-                    skills = resume.get('matched_skills', [])
-                    derived_tokens = []
-                    if isinstance(skills, list) and len(skills) > 0:
-                        # Normalize existing skill_id tokens to canonical taxonomy terms
-                        for skill in skills:
-                            if isinstance(skill, dict):
-                                token = str(skill.get('skill_id', '')).strip()
-                                if token:
-                                    derived_tokens.append(taxonomy.normalize_skill(token))
-                    else:
-                        # Backfill: derive skills from resume text using taxonomy
-                        sections = resume.get('sections', {})
-                        resume_text = ''
-                        if isinstance(sections, dict):
-                            try:
-                                resume_text = ' '.join([str(v) for v in sections.values()])
-                            except Exception:
-                                resume_text = ''
-                        derived_tokens = taxonomy.extract_skills_from_text(resume_text)
-                    
-                    skill_text = ' '.join(sorted(set([t for t in derived_tokens if t])))
-                    # Preprocess the skill text
-                    skill_text = preprocess_text(skill_text)
-                    skill_texts.append(skill_text)
-                except Exception as e:
-                    logger.warning(f"Error processing resume skills: {e}")
-                    skill_texts.append('')
-            
-            # Canonicalize JD skills to taxonomy tokens; fallback to entire JD sections if empty
-            jd_skills_raw = str(jd_sections.get('skills', ''))
-            jd_tokens = taxonomy.extract_skills_from_text(jd_skills_raw)
-            if not jd_tokens:
-                try:
-                    jd_all_text = ' '.join([
-                        str(jd_sections.get('experience', '')),
-                        str(jd_sections.get('skills', '')),
-                        str(jd_sections.get('education', '')),
-                        str(jd_sections.get('misc', ''))
-                    ])
-                except Exception:
-                    jd_all_text = jd_skills_raw
-                jd_tokens = taxonomy.extract_skills_from_text(jd_all_text)
-            jd_skills = preprocess_text(' '.join(sorted(set(jd_tokens))))
-            
-            # Check cache for skill vectorizer
-            skill_jd_hash = _jd_hash(jd_skills, self.tfidf_config['max_features'], self.tfidf_config['ngram_range'])
-            if skill_jd_hash in _skill_vectorizer_cache:
-                logger.info(f"[PERF] Using cached skill vectorizer for JD hash: {skill_jd_hash[:8]}")
-                skill_vectorizer = _skill_vectorizer_cache[skill_jd_hash]
-                all_skill_texts = [jd_skills] + skill_texts
-                skill_vectors = skill_vectorizer.transform(all_skill_texts)
-            else:
-                # Fit TF-IDF on skill tokens with separate config
-                skill_config = self.tfidf_config.copy()
-                skill_config['max_features'] = 500  # Smaller for skills
-                skill_config['ngram_range'] = (1, 2)  # Focus on unigrams and bigrams for skills
-                skill_vectorizer = TfidfVectorizer(**skill_config)
-                all_skill_texts = [jd_skills] + skill_texts
-                skill_vectors = skill_vectorizer.fit_transform(all_skill_texts)
-                _skill_vectorizer_cache[skill_jd_hash] = skill_vectorizer
-                logger.info(f"[PERF] Cached skill vectorizer for JD hash: {skill_jd_hash[:8]}")
-            
-            # Compute skill similarities
-            jd_skill_vector = skill_vectors[0:1]
-            resume_skill_vectors = skill_vectors[1:]
-            skill_similarities = cosine_similarity(jd_skill_vector, resume_skill_vectors).flatten()
-            
-            # Normalize skill scores to [0,1]
-            skill_raw_scores = skill_similarities.tolist()
-            if skill_raw_scores and len(skill_raw_scores) > 0:
-                skill_min, skill_max = min(skill_raw_scores), max(skill_raw_scores)
-                if skill_max > skill_min:
-                    skill_norm_scores = [_norm(score, skill_min, skill_max) for score in skill_raw_scores]
-                else:
-                    skill_norm_scores = [0.0] * len(skill_raw_scores)
-            else:
-                skill_norm_scores = [0.0] * len(resumes)
-            
-            logger.info(f"TF-IDF computation completed successfully. Section scores: {len(norm_scores)}, Skill scores: {len(skill_norm_scores)}")
-            return norm_scores, skill_norm_scores
-            
+            from sentence_transformers import SentenceTransformer
+            # Use lightweight model for speed
+            self.model = SentenceTransformer('all-MiniLM-L6-v2')
+            self.model_available = True
+            # Pre-embed all canonical skills
+            if canonical_skills:
+                self.embeddings = self.model.encode(canonical_skills, show_progress_bar=False)
+            logger.info(f"SemanticSkillMatcher initialized with {len(canonical_skills)} skills")
+        except ImportError:
+            logger.warning("SentenceTransformer not available for fuzzy matching")
+            self.model_available = False
         except Exception as e:
-            logger.error(f"Error in compute_section_tfidf_scores: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return [0.0] * len(resumes), [0.0] * len(resumes)
+            logger.warning(f"Failed to initialize semantic matcher: {e}")
+            self.model_available = False
+    
+    def find_closest_skill(self, skill: str, threshold: float = 0.7) -> Optional[Tuple[str, float]]:
+        """Find closest canonical skill using semantic similarity."""
+        if not self.model_available or self.embeddings is None:
+            return None
+        
+        try:
+            # Encode the input skill
+            skill_embedding = self.model.encode([skill], show_progress_bar=False)[0]
+            
+            # Compute cosine similarity with all canonical skills
+            from sklearn.metrics.pairwise import cosine_similarity
+            similarities = cosine_similarity([skill_embedding], self.embeddings)[0]
+            
+            # Find best match
+            best_idx = similarities.argmax()
+            best_score = float(similarities[best_idx])
+            
+            if best_score >= threshold:
+                return (self.canonical_skills[best_idx], best_score)
+            return None
+        except Exception as e:
+            logger.warning(f"Error in semantic skill matching: {e}")
+            return None
 
 
 class SkillTaxonomy:
-    """Skill taxonomy integration for normalizing skill variations."""
+    """Skill taxonomy integration for normalizing skill variations.
     
-    def __init__(self):
-        # Skill taxonomy mapping (simplified version - can be expanded)
+    This class provides a multi-domain skill taxonomy system that:
+    - Maintains core tech skills (hard-coded for performance)
+    - Loads domain-specific skills from JSON files (Marketing, Healthcare, Finance, etc.)
+    - Supports fuzzy matching using semantic similarity for unknown skills
+    - Provides confidence scoring for exact vs fuzzy matches
+    
+    The taxonomy automatically loads skills from the `skill_taxonomy/` directory
+    based on configuration in `config.json`. Domains can be enabled/disabled
+    without code changes.
+    
+    Attributes:
+        skill_mapping: Dictionary mapping canonical skill names to variations
+        reverse_mapping: Reverse lookup from variations to canonical names
+        config: Configuration loaded from config.json
+        fuzzy_enabled: Whether fuzzy matching is enabled
+        fuzzy_threshold: Minimum similarity threshold for fuzzy matches
+        loaded_domains: List of successfully loaded domain names
+    """
+    
+    def __init__(self, taxonomy_dir: Optional[str] = None):
+        """Initialize skill taxonomy with core tech skills and optional domain-specific skills."""
+        import os
+        import json
+        
+        # Core tech skills (hard-coded for performance)
         self.skill_mapping = {
             # Programming Languages
-            'python': ['python', 'python3', 'python 3', 'py'],
-            'javascript': ['javascript', 'js', 'ecmascript', 'es6', 'es2015'],
-            'java': ['java', 'j2ee', 'j2se'],
-            'c++': ['c++', 'cpp', 'c plus plus'],
-            'c#': ['c#', 'csharp', 'c sharp'],
-            'php': ['php', 'php7', 'php8'],
-            'ruby': ['ruby', 'ruby on rails', 'rails'],
-            'go': ['go', 'golang'],
-            'rust': ['rust'],
-            'swift': ['swift', 'swiftui'],
-            'kotlin': ['kotlin'],
-            'scala': ['scala'],
+            'python': ['python', 'python3', 'python 3', 'py', 'pythonic', 'pypy'],
+            'javascript': ['javascript', 'js', 'ecmascript', 'es6', 'es2015', 'es2016', 'es2017', 'es2018', 'es2019', 'es2020', 'es2021', 'es2022', 'es2023'],
+            'java': ['java', 'j2ee', 'j2se', 'jdk', 'jre', 'jvm', 'javase', 'javaee'],
+            'c++': ['c++', 'cpp', 'c plus plus', 'cplusplus', 'cxx'],
+            'c#': ['c#', 'csharp', 'c sharp', 'csharp', 'dotnet', '.net'],
+            'php': ['php', 'php7', 'php8', 'php5', 'php4'],
+            'ruby': ['ruby', 'ruby on rails', 'rails', 'ror'],
+            'go': ['go', 'golang', 'go lang'],
+            'rust': ['rust', 'rustlang'],
+            'swift': ['swift', 'swiftui', 'swift ui'],
+            'kotlin': ['kotlin', 'kotlin android'],
+            'scala': ['scala', 'scala lang'],
+            'r': ['r', 'r language', 'r programming'],
+            'matlab': ['matlab', 'matlab programming'],
+            'perl': ['perl', 'perl5', 'perl6'],
+            'haskell': ['haskell', 'haskell programming'],
+            'clojure': ['clojure', 'clojure programming'],
+            'erlang': ['erlang', 'erlang programming'],
+            'elixir': ['elixir', 'elixir programming'],
+            'dart': ['dart', 'dart programming'],
+            'c': ['c', 'c programming', 'ansi c'],
+            'cobol': ['cobol', 'cobol programming'],
+            'fortran': ['fortran', 'fortran programming'],
+            'assembly': ['assembly', 'asm', 'x86', 'x64', 'arm'],
             
             # Frameworks and Libraries
             'react': ['react', 'reactjs', 'react.js', 'reactjs', 'react native'],
@@ -868,30 +675,343 @@ class SkillTaxonomy:
             'microservices': ['microservices', 'micro service'],
             'api': ['api', 'apis'],
             'linux': ['linux', 'ubuntu', 'centos', 'debian'],
-            'chart.js': ['chartjs', 'chart.js', 'chart .js', 'chart. js'],
+            'chart.js': ['chartjs', 'chart.js'],
         }
+        
+        # Load domain-specific taxonomies from JSON files
+        self.config = {}
+        self.fuzzy_matcher = None
+        self.fuzzy_cache = {}
+        self.loaded_domains = []
+        
+        if taxonomy_dir is None:
+            # Default to skill_taxonomy directory relative to this file
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            taxonomy_dir = os.path.join(current_dir, 'skill_taxonomy')
+        
+        self.taxonomy_dir = taxonomy_dir
+        
+        # Load configuration
+        config_path = os.path.join(taxonomy_dir, 'config.json')
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    self.config = json.load(f)
+                logger.info(f"Loaded skill taxonomy config from {config_path}")
+            except json.JSONDecodeError as e:
+                logger.warning(f"Invalid JSON in taxonomy config {config_path}: {e}")
+                self.config = {}
+            except Exception as e:
+                logger.warning(f"Failed to load taxonomy config: {e}")
+                self.config = {}
+        else:
+            logger.debug(f"Taxonomy config not found at {config_path}, using defaults")
+        
+        # Load enabled domain taxonomies
+        enabled_domains = self.config.get('enabled_domains', [])
+        total_loaded_skills = 0
+        for domain in enabled_domains:
+            domain_file = f"{domain}.json"
+            domain_path = os.path.join(taxonomy_dir, domain_file)
+            if os.path.exists(domain_path):
+                try:
+                    domain_skills = self._load_domain_taxonomy(domain_path)
+                    if domain_skills:
+                        self.skill_mapping.update(domain_skills)
+                        total_loaded_skills += len(domain_skills)
+                        self.loaded_domains.append(domain)
+                        logger.info(f"Loaded {len(domain_skills)} skills from {domain_file}")
+                    else:
+                        logger.warning(f"Domain taxonomy {domain_file} is empty or invalid")
+                except Exception as e:
+                    logger.warning(f"Failed to load domain taxonomy {domain_file}: {e}")
+            else:
+                logger.debug(f"Domain taxonomy file not found: {domain_path}")
+        
+        if total_loaded_skills > 0:
+            logger.info(f"Skill taxonomy initialized: {len(self.skill_mapping)} total skills "
+                       f"({len(self.skill_mapping) - total_loaded_skills} core tech + "
+                       f"{total_loaded_skills} from {len(self.loaded_domains)} domains)")
+        else:
+            logger.info(f"Skill taxonomy initialized with {len(self.skill_mapping)} core tech skills only")
         
         # Create reverse mapping for quick lookup
         self.reverse_mapping = {}
         for canonical, variations in self.skill_mapping.items():
             for variation in variations:
                 self.reverse_mapping[variation.lower()] = canonical
-    
-    def normalize_skill(self, skill: str) -> str:
-        """Normalize a skill to its canonical form."""
-        skill_lower = skill.lower().strip()
         
-        # Direct match
+        # Initialize fuzzy matcher if enabled (lazy-loaded)
+        self.fuzzy_enabled = self.config.get('fuzzy_matching', {}).get('enabled', False)
+        self.fuzzy_threshold = self.config.get('fuzzy_matching', {}).get('threshold', 0.7)
+        self.confidence_weights = self.config.get('confidence_weights', {
+            'exact_match': 1.0,
+            'fuzzy_match': 0.6
+        })
+    
+    def _load_domain_taxonomy(self, domain_file: str) -> Dict[str, List[str]]:
+        """Load domain-specific taxonomy from JSON file.
+        
+        Args:
+            domain_file: Path to JSON file containing domain skills
+            
+        Returns:
+            Dictionary mapping canonical skill names to lists of variations
+        """
+        try:
+            with open(domain_file, 'r', encoding='utf-8') as f:
+                domain_data = json.load(f)
+            
+            # Validate structure: should be {canonical: [variations]}
+            if not isinstance(domain_data, dict):
+                logger.warning(f"Invalid taxonomy structure in {domain_file}: expected dict, got {type(domain_data)}")
+                return {}
+            
+            # Validate each entry
+            validated_data = {}
+            for canonical, variations in domain_data.items():
+                if isinstance(canonical, str) and isinstance(variations, list):
+                    # Ensure all variations are strings
+                    validated_variations = [str(v) for v in variations if v]
+                    if validated_variations:
+                        validated_data[canonical] = validated_variations
+                    else:
+                        logger.debug(f"Skipping {canonical} in {domain_file}: no valid variations")
+                else:
+                    logger.debug(f"Skipping invalid entry in {domain_file}: {canonical}")
+            
+            return validated_data
+        except json.JSONDecodeError as e:
+            logger.warning(f"Invalid JSON in domain taxonomy {domain_file}: {e}")
+            return {}
+        except FileNotFoundError:
+            logger.warning(f"Domain taxonomy file not found: {domain_file}")
+            return {}
+        except Exception as e:
+            logger.warning(f"Error loading domain taxonomy {domain_file}: {e}")
+            return {}
+    
+    def _get_fuzzy_matcher(self) -> Optional[SemanticSkillMatcher]:
+        """Lazy-load fuzzy matcher if enabled."""
+        if not self.fuzzy_enabled:
+            return None
+        
+        if self.fuzzy_matcher is None:
+            canonical_skills = list(self.skill_mapping.keys())
+            self.fuzzy_matcher = SemanticSkillMatcher(canonical_skills)
+        
+        return self.fuzzy_matcher if self.fuzzy_matcher.model_available else None
+    
+    def _fuzzy_match_skill(self, skill: str, threshold: Optional[float] = None) -> Optional[Tuple[str, float]]:
+        """Use semantic similarity to find closest canonical skill."""
+        if threshold is None:
+            threshold = self.fuzzy_threshold
+        
+        # Check cache first
+        cache_key = f"{skill.lower()}_{threshold}"
+        if cache_key in self.fuzzy_cache:
+            return self.fuzzy_cache[cache_key]
+        
+        matcher = self._get_fuzzy_matcher()
+        if matcher is None:
+            return None
+        
+        result = matcher.find_closest_skill(skill, threshold)
+        
+        # Cache result
+        if result is not None:
+            self.fuzzy_cache[cache_key] = result
+        
+        return result
+    
+    def normalize_skill(self, skill: str, use_fuzzy: bool = True) -> str:
+        """Normalize a skill to its canonical form with enhanced punctuation cleanup.
+        
+        Args:
+            skill: The skill name to normalize
+            use_fuzzy: If True, use fuzzy matching as fallback when exact match fails
+        
+        Returns:
+            Canonical skill name
+        """
+        if not skill or not isinstance(skill, str):
+            return ""
+        
+        # Enhanced cleanup with punctuation normalization
+        skill_clean = self._normalize_skill_punctuation(skill.strip())
+        skill_lower = skill_clean.lower()
+        
+        # Direct match - exact match in taxonomy
         if skill_lower in self.reverse_mapping:
             return self.reverse_mapping[skill_lower]
         
-        # Partial match (for multi-word skills)
+        # Partial match: ONLY match if the INPUT contains a known taxonomy variation
+        # This prevents generic terms like "project management" from matching 
+        # tool-specific terms like "asana project management" -> "asana"
         for variation, canonical in self.reverse_mapping.items():
-            if skill_lower in variation or variation in skill_lower:
-                return canonical
+            # Skip very short variations (< 3 chars) for substring matching
+            if len(variation) < 3:
+                continue
+            # ONLY match if the input CONTAINS the variation (input is longer or equal)
+            # This ensures "asana project management" -> "asana", but NOT "project management" -> "asana"
+            if variation in skill_lower and variation != skill_lower:
+                # Require variation to be at least 50% of input length
+                if len(variation) >= len(skill_lower) * 0.5:
+                    return canonical
         
-        # Return original if no match found
-        return skill
+        # Fuzzy matching as fallback - but only if enabled and skill is long enough
+        if use_fuzzy and self.fuzzy_enabled and len(skill_lower) >= 3:
+            fuzzy_result = self._fuzzy_match_skill(skill_clean)
+            if fuzzy_result:
+                return fuzzy_result[0]
+        
+        # Return cleaned version if no match found - PRESERVE USER INPUT
+        return skill_clean
+    
+    def normalize_skill_with_confidence(self, skill: str) -> Tuple[str, float]:
+        """Normalize a skill and return confidence score.
+        
+        Returns:
+            Tuple of (canonical_skill, confidence) where:
+            - confidence = 1.0 for exact matches
+            - confidence = fuzzy_score * fuzzy_weight for fuzzy matches
+            - confidence = 0.0 for no matches
+        """
+        if not skill or not isinstance(skill, str):
+            return ("", 0.0)
+        
+        skill_clean = self._normalize_skill_punctuation(skill.strip())
+        skill_lower = skill_clean.lower()
+        
+        # Direct match - highest confidence
+        if skill_lower in self.reverse_mapping:
+            return (self.reverse_mapping[skill_lower], self.confidence_weights['exact_match'])
+        
+        # Partial match - high confidence, but ONLY if lengths are similar
+        # This prevents "r" from matching "system monitoring" just because "r" is in the string
+        for variation, canonical in self.reverse_mapping.items():
+            # Skip very short variations (like single letters) for substring matching
+            if len(variation) < 3:
+                continue
+            # Only match if one is a substantial substring of the other (>50% length)
+            if skill_lower in variation:
+                if len(skill_lower) >= len(variation) * 0.5:
+                    return (canonical, self.confidence_weights['exact_match'])
+            elif variation in skill_lower:
+                if len(variation) >= len(skill_lower) * 0.5:
+                    return (canonical, self.confidence_weights['exact_match'])
+        
+        # Fuzzy matching - lower confidence
+        if self.fuzzy_enabled:
+            fuzzy_result = self._fuzzy_match_skill(skill_clean)
+            if fuzzy_result:
+                canonical, fuzzy_score = fuzzy_result
+                fuzzy_weight = self.confidence_weights.get('fuzzy_match', 0.6)
+                confidence = fuzzy_score * fuzzy_weight
+                return (canonical, confidence)
+        
+        # No match
+        return (skill_clean, 0.0)
+    
+    def _normalize_skill_punctuation(self, skill: str) -> str:
+        """Normalize punctuation and spacing in skill names with enhanced thesis-ready normalization.
+        
+        FIX: Strips ALL punctuation (periods, hyphens) and lowercases for consistent matching.
+        This ensures "Node.js" matches "nodejs", "React.js" matches "reactjs", etc.
+        """
+        if not skill:
+            return ""
+        
+        # First, handle special cases that need to be preserved before stripping
+        # These are skills where punctuation is meaningful (C++, C#, .NET)
+        skill_lower = skill.lower().strip()
+        
+        # Handle C++ variations (must check before stripping +)
+        if 'c++' in skill_lower or 'cpp' in skill_lower or 'c plus plus' in skill_lower:
+            return 'cpp'
+        
+        # Handle C# variations (must check before stripping #)
+        if 'c#' in skill_lower or 'csharp' in skill_lower or 'c sharp' in skill_lower:
+            return 'csharp'
+        
+        # Enhanced canonical mappings for common tech stack variations
+        # Check these BEFORE stripping punctuation
+        canonical_map = {
+            # JavaScript frameworks (with and without dots)
+            'node.js': 'nodejs',
+            'nodejs': 'nodejs',
+            'node': 'nodejs',  # Common shorthand
+            'react.js': 'react',
+            'reactjs': 'react',
+            'react': 'react',
+            'vue.js': 'vue',
+            'vuejs': 'vue',
+            'vue': 'vue',
+            'angular.js': 'angular',
+            'angularjs': 'angular',
+            'angular': 'angular',
+            'chart.js': 'chartjs',
+            'chartjs': 'chartjs',
+            'd3.js': 'd3',
+            'd3': 'd3',
+            'three.js': 'threejs',
+            'threejs': 'threejs',
+            # .NET variations
+            '.net': 'dotnet',
+            'dotnet': 'dotnet',
+            'asp.net': 'aspnet',
+            'aspnet': 'aspnet',
+            'asp net': 'aspnet',
+            # Common variations
+            'js': 'javascript',
+            'javascript': 'javascript',
+            'ts': 'typescript',
+            'typescript': 'typescript',
+            'py': 'python',
+            'python': 'python',
+            'sql': 'sql',
+            'nosql': 'nosql',
+            'html5': 'html',
+            'html': 'html',
+            'css3': 'css',
+            'css': 'css',
+            # Cloud/AWS
+            'aws': 'amazon web services',
+            'gcp': 'google cloud platform',
+            'azure': 'microsoft azure',
+            # Databases
+            'postgresql': 'postgres',
+            'postgres': 'postgres',
+            'mongodb': 'mongo',
+            'mongo': 'mongo',
+            'mysql': 'mysql',
+            # Tools
+            'git': 'git',
+            'github': 'git',
+            'gitlab': 'git',
+        }
+        
+        # Check canonical map first (handles variations with punctuation)
+        if skill_lower in canonical_map:
+            return canonical_map[skill_lower]
+        
+        # FIX: Strip ALL punctuation (periods, hyphens, etc.) for consistent matching
+        # This ensures "Node.js" -> "nodejs", "React.js" -> "reactjs", etc.
+        # Remove all punctuation except alphanumeric and spaces
+        skill_clean = re.sub(r'[^\w\s]', '', skill_lower)
+        
+        # Collapse multiple spaces to single space
+        skill_clean = re.sub(r'\s+', ' ', skill_clean).strip()
+        
+        # Check canonical map again with cleaned version
+        if skill_clean in canonical_map:
+            return canonical_map[skill_clean]
+        
+        # Remove common prefixes/suffixes that don't affect skill identity
+        skill_clean = re.sub(r'^(the|a|an)\s+', '', skill_clean)
+        skill_clean = re.sub(r'\s+(framework|library|tool|technology|platform)$', '', skill_clean)
+        
+        return skill_clean.strip()
     
     def extract_skills_from_text(self, text: str) -> List[str]:
         """Extract and normalize skills from text content using taxonomy variations.
@@ -900,7 +1020,38 @@ class SkillTaxonomy:
         """
         if not text or not isinstance(text, str):
             return []
-        text_lower = text.lower()
+        # Normalize unicode (handles fancy bullets/dashes and half-width variants)
+        text_normalized = unicodedata.normalize('NFKC', text)
+        # Replace common bullet/dash characters with spaces for cleaner boundaries
+        replacements = {
+            ord(ch): ' '
+            for ch in [
+                '\u2022',  # •
+                '\u25CF',  # ●
+                '\u25AA',  # ▪
+                '\u25AB',  # ▫
+                '\u25E6',  # ◦
+                '\u2219',  # ∙
+                '\u00B7',  # ·
+                '\u2023',  # ‣
+                '\u2043',  # ⁃
+                '\u2212',  # −
+                '\u2013',  # –
+                '\u2014',  # —
+                '\u2015',  # ―
+                '\u2010',  # ‐
+                '\u204C',  # ⁌
+                '\u204D',  # ⁍
+            ]
+        }
+        text_normalized = text_normalized.translate(replacements)
+        # Remove zero-width and non-breaking spaces that break regex boundaries
+        text_normalized = text_normalized.replace('\u200b', ' ').replace('\xa0', ' ')
+        # Fix common "chart. js" -> "chart.js" style spacing
+        text_normalized = re.sub(r'\b([a-z0-9]+)\.\s+(js)\b', r'\1.\2', text_normalized, flags=re.IGNORECASE)
+        # Collapse multiple whitespace
+        text_normalized = re.sub(r'\s+', ' ', text_normalized)
+        text_lower = text_normalized.lower()
         found: set[str] = set()
         # Use punctuation-aware boundaries so terms like "c++", "c#", "asp.net" match
         left = r"(?<![A-Za-z0-9])"
@@ -915,6 +1066,126 @@ class SkillTaxonomy:
                 if variation in text_lower:
                     found.add(canonical)
         return sorted(found)
+    
+    def extract_must_have_skills_from_jd(self, jd_text: str, responsibilities: str = "", max_skills: int = 8) -> List[str]:
+        """Intelligently extract truly must-have skills from JD text.
+        
+        Unlike extract_skills_from_text() which extracts ALL mentioned skills,
+        this method uses contextual signals to identify only required skills:
+        - Skills near "required", "must have", "essential", "mandatory"
+        - Skills mentioned multiple times (high frequency = importance)
+        - Skills in requirements/qualifications sections
+        - Filters out skills near "preferred", "nice to have", "bonus", "plus"
+        
+        Args:
+            jd_text: Full job description text
+            responsibilities: Additional responsibilities text
+            max_skills: Maximum number of skills to return (default 8)
+            
+        Returns:
+            List of canonical skill names that are truly required
+        """
+        if not jd_text and not responsibilities:
+            return []
+        
+        # Combine all JD content
+        full_text = f"{jd_text}\n{responsibilities}".lower()
+        
+        # Define context patterns for must-have vs nice-to-have
+        must_have_patterns = [
+            r'required[:\s]',
+            r'must[\s-]?have',
+            r'essential',
+            r'mandatory',
+            r'requirements?[:\s]',
+            r'qualifications?[:\s]',
+            r'minimum[\s]requirements?',
+            r'key[\s]requirements?',
+            r'you[\s]must[\s]have',
+            r'we[\s]require',
+            r'strong[\s](?:knowledge|experience|skills?)',
+            r'proven[\s](?:experience|track)',
+            r'proficiency[\s]in',
+            r'expert[\s]in',
+            r'hands[\s-]?on[\s]experience',
+        ]
+        
+        nice_to_have_patterns = [
+            r'nice[\s-]?to[\s-]?have',
+            r'preferred',
+            r'bonus',
+            r'plus',
+            r'advantageous',
+            r'desirable',
+            r'ideally',
+            r'a[\s]plus',
+            r'would[\s]be[\s](?:nice|great|good)',
+            r'familiarity[\s]with',  # Often indicates nice-to-have
+            r'exposure[\s]to',
+        ]
+        
+        # Extract all skills first
+        all_skills = self.extract_skills_from_text(full_text)
+        
+        if not all_skills:
+            return []
+        
+        # Score each skill based on context
+        skill_scores: Dict[str, float] = {}
+        
+        for skill in all_skills:
+            score = 0.0
+            
+            # Find all occurrences of the skill
+            skill_pattern = r'\b' + re.escape(skill) + r'\b'
+            try:
+                occurrences = list(re.finditer(skill_pattern, full_text, re.IGNORECASE))
+            except Exception:
+                occurrences = []
+            
+            if not occurrences:
+                # Skill matched via variation, give base score
+                score = 0.3
+            else:
+                # Frequency bonus (more mentions = more important)
+                score += min(len(occurrences) * 0.15, 0.6)
+                
+                # Check context around each occurrence
+                for match in occurrences:
+                    start = max(0, match.start() - 100)
+                    end = min(len(full_text), match.end() + 50)
+                    context = full_text[start:end]
+                    
+                    # Boost for must-have context
+                    for pattern in must_have_patterns:
+                        if re.search(pattern, context):
+                            score += 0.25
+                            break
+                    
+                    # Penalty for nice-to-have context
+                    for pattern in nice_to_have_patterns:
+                        if re.search(pattern, context):
+                            score -= 0.4
+                            break
+            
+            # Check if skill appears in first half of text (usually requirements)
+            first_half = full_text[:len(full_text)//2]
+            if skill.lower() in first_half:
+                score += 0.15
+            
+            skill_scores[skill] = score
+        
+        # Filter to only positive-scoring skills
+        must_have_skills = [skill for skill, score in skill_scores.items() if score > 0.3]
+        
+        # Sort by score and limit
+        must_have_skills.sort(key=lambda s: skill_scores.get(s, 0), reverse=True)
+        result = must_have_skills[:max_skills]
+        
+        if result:
+            logger.info(f"[SKILL_EXTRACT] Auto-extracted {len(result)} must-have skills from JD: {result}")
+        
+        return result
     
     def get_skill_taxonomy_score(self, resume_skills: List[str], job_skills: List[str]) -> float:
         """Calculate skill taxonomy overlap score."""
@@ -948,313 +1219,90 @@ class SkillTaxonomy:
         # Find matches
         matched = set(resume_skills) & set(normalized_required)
         return sorted(list(matched))
-
-
-class SemanticEmbedding:
-    """Semantic embedding generation for resume content."""
     
-    def __init__(self, model_name: str = 'all-MiniLM-L6-v2'):
-        try:
-            from sentence_transformers import SentenceTransformer
-            self.model = SentenceTransformer(model_name)
-            self.model_available = True
-        except ImportError:
-            logger.warning("SentenceTransformer not available. Install with: pip install sentence-transformers")
-            self.model_available = False
-            self.model = None
-    
-    def generate_section_embeddings(self, resume_data: Dict[str, Any]) -> Dict[str, np.ndarray]:
-        """Generate embeddings for each section of a resume."""
-        if not self.model_available:
-            logger.error("SentenceTransformer model not available")
-            return {}
+    def get_matched_nice_to_have_skills(self, resume_text: str, nice_to_have_skills: List[str]) -> List[str]:
+        """Get canonical list of nice-to-have skills that are matched in resume text.
         
-        timing_bucket = {}
+        THESIS-READY FIX #1: Enhanced normalization ensures variations like "Node.js" 
+        match "nodejs" in the config.
         
-        with time_phase("vectorize", timing_bucket):
-            sections = resume_data.get('sections', [])
-            embeddings = {}
+        FIX: Added super-normalized matching to guarantee matches even with punctuation variations.
+        """
+        if not resume_text or not nice_to_have_skills:
+            return []
+        
+        # Extract skills from resume text using enhanced normalization
+        resume_skills = self.extract_skills_from_text(resume_text)
+        
+        # Normalize nice-to-have skills with enhanced normalization
+        normalized_nice_to_have = [self.normalize_skill(skill) for skill in nice_to_have_skills]
+        
+        # Find matches using taxonomy extraction
+        matched = set(resume_skills) & set(normalized_nice_to_have)
+        
+        # FIX: Force matching with super-normalized text (removes all non-alphanumeric)
+        # This guarantees "Node.js" matches "nodejs" and "C++.net" matches "cppnet"
+        if len(matched) == 0:
+            # Create super-normalized version of resume text (alphanumeric only)
+            clean_text = re.sub(r'[^a-z0-9]', '', resume_text.lower())
             
-            for section in sections:
-                header = section['header']
-                content = section['content']
+            # Check each nice-to-have skill in super-normalized form
+            for skill in nice_to_have_skills:
+                normalized_skill = self.normalize_skill(skill)
+                # Super-normalize the skill (remove all non-alphanumeric)
+                clean_skill = re.sub(r'[^a-z0-9]', '', normalized_skill.lower())
                 
-                # Combine content into single text
-                section_text = ' '.join(content)
+                # Check if super-normalized skill exists in super-normalized text
+                if clean_skill and clean_skill in clean_text:
+                    matched.add(normalized_skill)
+                    logger.debug(f"[NICE_TO_HAVE] Super-normalized match: '{skill}' -> '{normalized_skill}' (clean: '{clean_skill}')")
+        
+        return sorted(list(matched))
+    
+    def get_matched_required_skills_with_confidence(
+        self, 
+        resume_text: str, 
+        required_skills: List[str], 
+        min_confidence: float = 0.7
+    ) -> List[Tuple[str, float]]:
+        """Get matched required skills with confidence scores.
+        
+        This method normalizes required skills and checks if they appear in the resume text,
+        returning matches with their confidence scores. Useful for weighted coverage calculations.
+        
+        Args:
+            resume_text: Text content from resume (all sections combined)
+            required_skills: List of required skills from job description
+            min_confidence: Minimum confidence threshold for matches (0.0-1.0)
+        
+        Returns:
+            List of (matched_skill, confidence) tuples, sorted by confidence descending.
+            Confidence scores:
+            - 1.0 for exact matches (skill found in taxonomy)
+            - 0.6-0.9 for fuzzy matches (semantic similarity, if enabled)
+            - 0.0 for no matches
+        """
+        if not resume_text or not required_skills:
+            return []
+        
+        # Extract skills from resume text
+        resume_skills = self.extract_skills_from_text(resume_text)
+        resume_skills_set = set(resume_skills)
+        
+        # Normalize required skills with confidence
+        matched_with_confidence = []
+        for req_skill in required_skills:
+            if not req_skill or not isinstance(req_skill, str):
+                continue
                 
-                if section_text.strip():
-                    try:
-                        # Generate embedding
-                        embedding = self.model.encode(section_text)
-                        embeddings[header] = embedding
-                    except Exception as e:
-                        logger.warning(f"Error generating embedding for section {header}: {str(e)}")
+            canonical, confidence = self.normalize_skill_with_confidence(req_skill)
+            
+            # Check if this canonical skill is in resume
+            if canonical in resume_skills_set and confidence >= min_confidence:
+                matched_with_confidence.append((canonical, confidence))
         
-        return embeddings
-    
-    def generate_resume_embedding(self, resume_data: Dict[str, Any]) -> np.ndarray:
-        """Generate a single embedding for the entire resume."""
-        if not self.model_available:
-            logger.error("SentenceTransformer model not available")
-            return np.zeros(384)  # Default embedding size
-        
-        timing_bucket = {}
-        
-        with time_phase("vectorize", timing_bucket):
-            # Combine all content
-            all_content = []
-            for section in resume_data.get('sections', []):
-                all_content.extend(section['content'])
-            
-            combined_text = ' '.join(all_content)
-            
-            if combined_text.strip():
-                try:
-                    embedding = self.model.encode(combined_text)
-                    return embedding
-                except Exception as e:
-                    logger.error(f"Error generating resume embedding: {str(e)}")
-                    return np.zeros(384)
-            
-            return np.zeros(384)
-    
-    def calculate_semantic_similarity(self, embedding1: np.ndarray, embedding2: np.ndarray) -> float:
-        """Calculate semantic similarity between two embeddings."""
-        if embedding1.size == 0 or embedding2.size == 0:
-            return 0.0
-        
-        timing_bucket = {}
-        
-        with time_phase("cosine", timing_bucket):
-            # Ensure same dimensions
-            if embedding1.size != embedding2.size:
-                min_size = min(embedding1.size, embedding2.size)
-                embedding1 = embedding1[:min_size]
-                embedding2 = embedding2[:min_size]
-            
-            # Calculate cosine similarity
-            similarity = np.dot(embedding1, embedding2) / (np.linalg.norm(embedding1) * np.linalg.norm(embedding2))
-        
-        return float(similarity)
-    
-    def compute_sbert_scores(self, resumes: List[Dict[str, Any]], job_description: str) -> List[float]:
-        """Compute SBERT semantic similarity scores for all resumes."""
-        try:
-            if not self.model_available:
-                logger.warning("SBERT model not available, returning zero scores")
-                return [0.0] * len(resumes)
-            
-            timing_bucket = {}
-            scores = []
-            
-            with time_phase("sbert_encode", timing_bucket):
-                # Normalize and preprocess job description
-                try:
-                    if isinstance(job_description, str):
-                        # Normalize JD if it's raw text
-                        jd_normalized = normalize_job_description(job_description)
-                        # Combine all JD sections for SBERT
-                        jd_text = ' '.join([
-                            jd_normalized.get('job_title', ''),
-                            jd_normalized.get('experience_required', ''),
-                            jd_normalized.get('skills_required', ''),
-                            jd_normalized.get('responsibilities', ''),
-                            jd_normalized.get('education', ''),
-                            jd_normalized.get('company_description', ''),
-                            jd_normalized.get('location', '')
-                        ])
-                    else:
-                        # Assume it's already normalized
-                        jd_text = str(job_description)
-                    
-                    # Preprocess the JD text
-                    jd_text = preprocess_text(jd_text)
-                    
-                    if not jd_text.strip():
-                        logger.warning("Empty job description after preprocessing, returning zero scores")
-                        return [0.0] * len(resumes)
-                    
-                    jd_embedding = self.model.encode(jd_text)
-                except Exception as e:
-                    logger.warning(f"Error encoding job description: {e}")
-                    return [0.0] * len(resumes)
-                
-                for i, resume in enumerate(resumes):
-                    try:
-                        # Generate resume embedding from preprocessed text
-                        resume_text = self._extract_preprocessed_text(resume)
-                        # Preprocess resume text
-                        resume_text = preprocess_text(resume_text)
-                        
-                        if not resume_text.strip():
-                            logger.warning(f"Empty resume text for resume {i}, using zero score")
-                            scores.append(0.0)
-                            continue
-                        
-                        resume_embedding = self.model.encode(resume_text)
-                        
-                        # Calculate similarity
-                        similarity = self.calculate_semantic_similarity(jd_embedding, resume_embedding)
-                        scores.append(similarity)
-                    except Exception as e:
-                        logger.warning(f"Error processing resume {i} for SBERT: {e}")
-                        scores.append(0.0)
-            
-            # Normalize scores to [0,1]
-            if scores:
-                min_score, max_score = min(scores), max(scores)
-                if max_score > min_score:
-                    scores = [_norm(score, min_score, max_score) for score in scores]
-                else:
-                    scores = [0.5] * len(scores)  # All same score
-            
-            return scores
-            
-        except Exception as e:
-            logger.error(f"Error in compute_sbert_scores: {e}")
-            return [0.0] * len(resumes)
-    
-    def _extract_preprocessed_text(self, resume: Dict[str, Any]) -> str:
-        """Extract preprocessed text from resume for SBERT scoring."""
-        try:
-            sections = resume.get('sections', {})
-            all_content = []
-            
-            if isinstance(sections, dict):
-                # Handle dict format sections (most common)
-                for section_name, section_content in sections.items():
-                    try:
-                        if isinstance(section_content, list):
-                            all_content.extend([str(item) for item in section_content])
-                        else:
-                            all_content.append(str(section_content))
-                    except Exception as e:
-                        logger.warning(f"Error processing section {section_name}: {e}")
-                        continue
-            elif isinstance(sections, list):
-                # Handle list format sections
-                for section in sections:
-                    try:
-                        if isinstance(section, dict):
-                            content = section.get('content', [])
-                            if isinstance(content, list):
-                                all_content.extend([str(item) for item in content])
-                            else:
-                                all_content.append(str(content))
-                        else:
-                            logger.warning(f"Invalid section format: {type(section)}")
-                    except Exception as e:
-                        logger.warning(f"Error processing section: {e}")
-                        continue
-            else:
-                logger.warning(f"Invalid sections format: {type(sections)}")
-            
-            return ' '.join(all_content)
-            
-        except Exception as e:
-            logger.warning(f"Error extracting preprocessed text: {e}")
-            return ""
+        # Sort by confidence descending
+        matched_with_confidence.sort(key=lambda x: x[1], reverse=True)
+        return matched_with_confidence
 
 
-class ResumeProcessor:
-    """Main processor that combines all text processing components."""
-    
-    def __init__(self):
-        self.tfidf_processor = SectionAwareTFIDF()
-        self.skill_taxonomy = SkillTaxonomy()
-        self.semantic_embedding = SemanticEmbedding()
-    
-    def process_resume(self, resume_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Process a resume through all text processing components."""
-        processed_data = {
-            'original_data': resume_data,
-            'tfidf_vectors': {},
-            'skill_analysis': {},
-            'semantic_embeddings': {},
-            'combined_scores': {}
-        }
-        
-        try:
-            # Generate TF-IDF vectors
-            section_vectors = self.tfidf_processor.build_section_vectors(resume_data)
-            combined_vector = self.tfidf_processor.combine_weighted_vectors(section_vectors)
-            processed_data['tfidf_vectors'] = {
-                'section_vectors': section_vectors,
-                'combined_vector': combined_vector.tolist()
-            }
-            
-            # Extract and normalize skills
-            all_content = []
-            for section in resume_data.get('sections', []):
-                all_content.extend(section['content'])
-            
-            combined_text = ' '.join(all_content)
-            extracted_skills = self.skill_taxonomy.extract_skills_from_text(combined_text)
-            
-            processed_data['skill_analysis'] = {
-                'extracted_skills': extracted_skills,
-                'skill_count': len(extracted_skills)
-            }
-            
-            # Generate semantic embeddings
-            section_embeddings = self.semantic_embedding.generate_section_embeddings(resume_data)
-            resume_embedding = self.semantic_embedding.generate_resume_embedding(resume_data)
-            
-            processed_data['semantic_embeddings'] = {
-                'section_embeddings': {k: v.tolist() for k, v in section_embeddings.items()},
-                'resume_embedding': resume_embedding.tolist()
-            }
-            
-            # Calculate combined scores
-            processed_data['combined_scores'] = {
-                'tfidf_score': float(np.linalg.norm(combined_vector)),
-                'skill_diversity': len(extracted_skills),
-                'semantic_richness': float(np.linalg.norm(resume_embedding))
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing resume: {str(e)}")
-            processed_data['error'] = str(e)
-        
-        return processed_data
-    
-    def compare_resumes(self, resume1_data: Dict[str, Any], resume2_data: Dict[str, Any]) -> Dict[str, float]:
-        """Compare two resumes using all similarity metrics."""
-        # Process both resumes
-        processed1 = self.process_resume(resume1_data)
-        processed2 = self.process_resume(resume2_data)
-        
-        comparison_scores = {}
-        
-        try:
-            # TF-IDF similarity
-            if 'tfidf_vectors' in processed1 and 'tfidf_vectors' in processed2:
-                tfidf_sim = self.tfidf_processor.calculate_similarity(
-                    processed1['tfidf_vectors']['section_vectors'],
-                    processed2['tfidf_vectors']['section_vectors']
-                )
-                comparison_scores['tfidf_similarity'] = tfidf_sim
-            
-            # Skill taxonomy similarity
-            skills1 = processed1['skill_analysis'].get('extracted_skills', [])
-            skills2 = processed2['skill_analysis'].get('extracted_skills', [])
-            skill_sim = self.skill_taxonomy.get_skill_taxonomy_score(skills1, skills2)
-            comparison_scores['skill_similarity'] = skill_sim
-            
-            # Semantic similarity
-            if 'semantic_embeddings' in processed1 and 'semantic_embeddings' in processed2:
-                emb1 = np.array(processed1['semantic_embeddings']['resume_embedding'])
-                emb2 = np.array(processed2['semantic_embeddings']['resume_embedding'])
-                semantic_sim = self.semantic_embedding.calculate_semantic_similarity(emb1, emb2)
-                comparison_scores['semantic_similarity'] = semantic_sim
-            
-            # Overall similarity (weighted average)
-            similarities = [v for v in comparison_scores.values() if isinstance(v, (int, float))]
-            if similarities:
-                comparison_scores['overall_similarity'] = sum(similarities) / len(similarities)
-            
-        except Exception as e:
-            logger.error(f"Error comparing resumes: {str(e)}")
-            comparison_scores['error'] = str(e)
-        
-        return comparison_scores 
