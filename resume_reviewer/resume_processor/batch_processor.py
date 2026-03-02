@@ -67,6 +67,14 @@ except ImportError:
         BATCH_TIMEOUT_SEC = 300
         RESUME_TIMEOUT_SEC = 60
 
+try:
+    from .hybrid_ranker import HybridRanker, SBERT_MODEL_NAME
+except ImportError:
+    try:
+        from hybrid_ranker import HybridRanker, SBERT_MODEL_NAME
+    except ImportError:
+        from resume_processor.hybrid_ranker import HybridRanker, SBERT_MODEL_NAME
+
 logger = logging.getLogger(__name__)
 
 TIMING_ENABLED = os.getenv("TIMING", "0") in {"1", "true", "True"}
@@ -177,8 +185,8 @@ class BatchProcessor:
         output_dir = os.path.join(os.getcwd(), 'batch_processing_output')
         self.pdf_parser = PDFParser(output_dir=output_dir, disable_ocr=disable_ocr)
 
-        # Placeholder -- hybrid_ranker.py will own the real models
-        self.semantic_embedding = None
+        # Hybrid retrieve-and-rerank pipeline (BM25 → SBERT → RRF → Cross-Encoder)
+        self.ranker = HybridRanker()
 
         # Section weights and canonical mapping (used by _normalize_sections)
         self.section_weights = {
@@ -263,23 +271,13 @@ class BatchProcessor:
             with time_phase("jd_normalize", timing_bucket):
                 jd_normalized = normalize_job_description(job_description)
 
-            # -- Scoring placeholder -----------------------------------------
-            # TODO: Plug in hybrid_ranker.rank(parsed_resumes, jd_normalized)
-            # For now every resume gets final_score = 0.0
-            for r in parsed_resumes:
-                r.scores.final_score = 0.0
-                r.scores.final_score_display = 0.0
-                r.scores.rationale = "Scoring not yet implemented -- awaiting hybrid pipeline."
-
-            # Build ranking (all tied at 0)
-            final_ranking = []
-            for i, r in enumerate(parsed_resumes):
-                final_ranking.append({
-                    'id': r.id,
-                    'rank': i + 1,
-                    'reasoning': r.scores.rationale,
-                    'scores_snapshot': {'final_score': 0.0},
-                })
+            # -- Hybrid Retrieve-and-Rerank pipeline -------------------------
+            logger.info("Running hybrid ranking pipeline")
+            with time_phase("hybrid_rank", timing_bucket):
+                final_ranking = self.ranker.rank(
+                    parsed_resumes, jd_normalized,
+                    top_k=min(10, len(parsed_resumes)),
+                )
 
             # Step 3: Assemble output (includes NLG if enabled)
             with time_phase("save_results", timing_bucket):
@@ -1869,7 +1867,7 @@ class BatchProcessor:
         jd_digest = {
             'tokens_summary': f"Job description with {len(job_description.split())} words",
             'top_skills': self._extract_top_skills(job_description),
-            'embedding_info': {'model': 'sentence-bert' if self.semantic_embedding and self.semantic_embedding.model_available else 'fallback', 'dim': 384 if self.semantic_embedding and self.semantic_embedding.model_available else 0}
+            'embedding_info': {'model': SBERT_MODEL_NAME, 'dim': 384}
         }
         if isinstance(jd_criteria, dict) and jd_criteria:
             jd_digest['criteria'] = jd_criteria
